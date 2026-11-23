@@ -1,0 +1,4 @@
+# Example group. One target per line: host or host:port.
+# Replace these hosts with your own; files in this directory are committed.
+web1.example.com
+web2.example.com:2222

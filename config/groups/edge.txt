@@ -1,0 +1,2 @@
+# Second example group, used to show "all" and per-group rollouts.
+edge1.example.com
