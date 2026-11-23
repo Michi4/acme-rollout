@@ -101,6 +101,35 @@ naechsten Runde erneut versucht; der Betrieb laeuft weiter. Test:
 docker compose run --rm --entrypoint sh acme /data/deploy/notify.sh --test
 ```
 
+### Postfix auf dem Host
+
+Der Container kann das `sendmail` des Hosts nicht ausfuehren (Alpine, eigenes
+Postfix fehlt). Er kann die Mail aber an den Host-MTA abgeben:
+
+```
+NOTIFY_BACKEND=postfix
+```
+
+Dann geht die Mail an `host.docker.internal:25`, ohne TLS und ohne Login;
+Absender ist `acme-rollout@<domain von ALERT_EMAIL>`. Der Name ist im
+Compose-File auf das Host-Gateway gemappt. Postfix muss Relay aus dem
+Docker-Netz annehmen:
+
+```bash
+docker network inspect acme-rollout_default \
+    -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}'
+# z. B. 172.18.0.0/16
+
+# /etc/postfix/main.cf
+mynetworks = 127.0.0.0/8 172.18.0.0/16
+inet_interfaces = all
+```
+
+Danach `postfix reload`. `inet_interfaces = all` ist bei Debian/Ubuntu der
+Standard; wenn Postfix oeffentlich erreichbar ist, Port 25 per Firewall auf die
+Docker-Subnetze beschraenken. `NOTIFY_BACKEND=smtp` (Standard) nutzt weiterhin
+die Werte oben.
+
 ## Erstes Zertifikat
 
 ```bash

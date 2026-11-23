@@ -4,19 +4,46 @@
 #   printf 'Text\n' | ./deploy/notify.sh "Betreff"
 #   ./deploy/notify.sh --test
 #
-# Ohne SMTP_HOST oder ALERT_EMAIL wird nichts verschickt, sondern die Meldung
-# mit einer Warnung ins Log geschrieben. Der Zyklus laeuft dadurch weiter.
+# NOTIFY_BACKEND=smtp     SMTP_HOST, SMTP_PORT, SMTP_TLS, SMTP_USER, SMTP_PASS
+# NOTIFY_BACKEND=postfix  Host-MTA ueber host.docker.internal:25, ohne TLS/Login
+#
+# Ohne ALERT_EMAIL oder ohne Versandweg wird nichts verschickt, sondern die
+# Meldung mit einer Warnung ins Log geschrieben. Der Zyklus laeuft weiter und
+# versucht es in der naechsten Runde erneut.
 set -u
 
+backend=${NOTIFY_BACKEND:-smtp}
 to=${ALERT_EMAIL:-}
 host=${SMTP_HOST:-}
-port=${SMTP_PORT:-587}
-tls=${SMTP_TLS:-starttls}
-from=${MAIL_FROM:-${SMTP_USER:-}}
+port=${SMTP_PORT:-}
+tls=${SMTP_TLS:-}
+from=${MAIL_FROM:-}
+
+case "$backend" in
+    smtp)
+        port=${port:-587}
+        tls=${tls:-starttls}
+        if [ -z "$from" ]; then
+            from=${SMTP_USER:-}
+        fi
+        ;;
+    postfix|local)
+        # Der Host schickt die Mail selbst weiter; der Container kann dessen
+        # sendmail nicht ausfuehren, spricht aber SMTP mit dem Host-MTA.
+        host=${host:-host.docker.internal}
+        port=${port:-25}
+        tls=${tls:-none}
+        ;;
+    *)
+        echo "notify: NOTIFY_BACKEND ungueltig: $backend (smtp|postfix)" >&2
+        exit 1
+        ;;
+esac
 
 if [ "${1:-}" = "--test" ]; then
     subject="[acme-rollout] Testmail"
     body="Diese Testmail kommt von acme-rollout.
+Backend: $backend
 Host: $(hostname)
 Zeit: $(date)"
 else
@@ -33,14 +60,21 @@ if [ -z "$to" ]; then
     printf '%s\n' "$body" >&2
     exit 1
 fi
+case "$to" in
+    *@*) ;;
+    *)
+        echo "notify: ALERT_EMAIL ungueltig: $to" >&2
+        exit 1
+        ;;
+esac
 if [ -z "$host" ]; then
     echo "notify: SMTP_HOST fehlt, Meldung nur im Log (siehe .env)" >&2
     printf '%s\n' "$body" >&2
     exit 1
 fi
 if [ -z "$from" ]; then
-    echo "notify: MAIL_FROM oder SMTP_USER fehlt" >&2
-    exit 1
+    # Lokal abgegebene Mail braucht keinen echten Postfach-Absender.
+    from="acme-rollout@${to#*@}"
 fi
 
 _msg=$(mktemp) || exit 1
@@ -73,13 +107,14 @@ esac
 
 set -- -fsS --max-time 30 $_tls_opt --url "$_url" \
     --mail-from "$from" --mail-rcpt "$to" --upload-file "$_msg"
-if [ -n "${SMTP_USER:-}" ]; then
+# Der lokale MTA nimmt unauthentifiziert an; Login nur im smtp-Modus.
+if [ "$backend" = smtp ] && [ -n "${SMTP_USER:-}" ]; then
     set -- "$@" --user "$SMTP_USER:${SMTP_PASS:-}"
 fi
 
 if curl "$@"; then
-    echo "notify: Mail an $to gesendet"
+    echo "notify: Mail an $to gesendet ($backend)"
 else
-    echo "notify: Mailversand an $to fehlgeschlagen" >&2
+    echo "notify: Mailversand an $to fehlgeschlagen ($backend)" >&2
     exit 1
 fi
