@@ -12,6 +12,9 @@
 set -u
 
 ACME_SH=${ACME_SH:-/opt/acme/acme.sh}
+# acme.sh resolves its installer/helper files relative to the working
+# directory. Always start from the acme.sh home, never from / or /data.
+cd "$(dirname "$ACME_SH")" || exit 1
 HOME_DIR=${ACME_HOME:-/data}
 LOCK=${ACME_LOCK:-/data/.acme.lock}
 DEPLOY_DIR=${ACME_DEPLOY_DIR:-/data/deploy}
