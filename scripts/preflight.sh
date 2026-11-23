@@ -1,22 +1,22 @@
 #!/bin/sh
-# Wird von scripts/issue.sh und scripts/deploy.sh geladen.
+# Loaded by scripts/issue.sh and scripts/deploy.sh.
 #
-# check_host_keys "<hostliste>"    jeder Host braucht einen gepinnten Hostkey
-# check_cname <name> <fulldomain>  _acme-challenge.<name> muss auf den
-#                                  acme-dns-Slot zeigen
+# check_host_keys "<host list>"    every host needs a pinned host key
+# check_cname <name> <fulldomain>  _acme-challenge.<name> must point at the
+#                                  acme-dns slot
 #
-# SKIP_PREFLIGHT=1 ueberspringt beide Pruefungen.
+# SKIP_PREFLIGHT=1 skips both checks.
 
 check_host_keys() {
     if [ "${SKIP_PREFLIGHT:-0}" = 1 ]; then
         return 0
     fi
     if ! command -v ssh-keygen >/dev/null 2>&1; then
-        echo "WARN: ssh-keygen fehlt, Hostkey-Pruefung uebersprungen" >&2
+        echo "WARN: ssh-keygen missing, skipping host key check" >&2
         return 0
     fi
     if [ ! -f config/known_hosts ]; then
-        echo "config/known_hosts fehlt: ./scripts/known-hosts.sh ausfuehren" >&2
+        echo "config/known_hosts missing: run ./scripts/known-hosts.sh" >&2
         return 1
     fi
     _hk_missing=""
@@ -30,8 +30,8 @@ check_host_keys() {
         fi
     done
     if [ -n "$_hk_missing" ]; then
-        echo "Hostkey fehlt fuer:$_hk_missing" >&2
-        echo "Erst ./scripts/known-hosts.sh ausfuehren." >&2
+        echo "Host key missing for:$_hk_missing" >&2
+        echo "Run ./scripts/known-hosts.sh first." >&2
         return 1
     fi
     return 0
@@ -44,7 +44,7 @@ check_cname() {
         return 0
     fi
     if ! command -v dig >/dev/null 2>&1; then
-        echo "WARN: dig fehlt, CNAME-Pruefung uebersprungen" >&2
+        echo "WARN: dig missing, skipping CNAME check" >&2
         return 0
     fi
     _cn_got=$(dig +short CNAME "_acme-challenge.$_cn_name" 2>/dev/null | head -n 1)
@@ -54,8 +54,8 @@ check_cname() {
     _cn_got=$(printf '%s' "$_cn_got" | sed 's/\.$//' | tr 'A-Z' 'a-z')
     _cn_want=$(printf '%s' "$_cn_want" | sed 's/\.$//' | tr 'A-Z' 'a-z')
     if [ "$_cn_got" != "$_cn_want" ]; then
-        echo "CNAME _acme-challenge.$_cn_name zeigt auf '${_cn_got:-nichts}', erwartet '$_cn_want'." >&2
-        echo "DNS-Eintrag pruefen oder SKIP_PREFLIGHT=1 setzen." >&2
+        echo "CNAME _acme-challenge.$_cn_name points to '${_cn_got:-nothing}', expected '$_cn_want'." >&2
+        echo "Check the DNS record or set SKIP_PREFLIGHT=1." >&2
         return 1
     fi
     return 0

@@ -1,7 +1,7 @@
 FROM alpine:3.20
 
-# Version und Pruefsummen gehoeren zusammen: ein bewegter Tag faellt beim Build
-# auf. Aktualisieren mit ./scripts/bump-acme.sh.
+# Version and checksums belong together: a moved tag fails the build. Update
+# with ./scripts/bump-acme.sh.
 ARG ACME_VERSION=3.1.7
 ARG ACME_SHA256=35bf6b947478666be137f938f77c5089954f120798220e6fff390949c5ea5692
 ARG DNS_ACMEDNS_SHA256=8a325d23ad708b7abcbd13e9d5d42aab70aa9e4a81095f709f56448064660f7a
@@ -28,7 +28,7 @@ RUN apk add --no-cache \
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod 0755 /entrypoint.sh
 
-# Das dns_acmedns-Plugin wuerde sonst auf auth.acme-dns.io zurueckfallen.
+# The dns_acmedns plugin would otherwise fall back to auth.acme-dns.io.
 ENV ACMEDNS_BASE_URL=https://auth.example.com
 ENV LE_WORKING_DIR=/data
 ENTRYPOINT ["/entrypoint.sh"]

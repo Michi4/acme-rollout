@@ -1,20 +1,19 @@
 #!/bin/sh
-# Vorhandene Zertifikate auf die Hosts nachziehen, die es brauchen.
+# Catch existing certificates up on the hosts that need them.
 #
-# Laeuft im Container nach jeder Erneuerungsrunde. Statt die ganze Gruppe
-# regelmaessig neu zu bespielen, wird pro Zertifikat und Host der letzte
-# erfolgreiche Deploy in /data/deploy-state gefuehrt:
+# Runs in the container after every renewal round. Instead of re-pushing the
+# whole group on a timer, the last successful deploy per certificate and host is
+# tracked in /data/deploy-state:
 #
-#   - Host noch nie erfolgreich beliefert -> sofort
-#   - letzter Versuch fehlgeschlagen      -> Retry mit Backoff (6 h, 12 h, 24 h)
-#   - Zertifikat neuer als der letzte Deploy -> sofort
-#   - sonst                                -> alle DEPLOY_SYNC_AGE Sekunden (24 h)
+#   - host never deployed successfully  -> immediately
+#   - last attempt failed               -> retry with backoff (6 h, 12 h, 24 h)
+#   - certificate newer than last deploy -> immediately
+#   - otherwise                         -> every DEPLOY_SYNC_AGE seconds (24 h)
 #
-# Der letzte Fall ist die Drift-Pruefung: ein neu gebauter Host, ein
-# geloeschtes Zertifikat oder ein verpasster Reload wird so innerhalb eines
-# Tages erkannt, ohne auf die naechste Erneuerung zu warten.
+# The last case is the drift check: a rebuilt host, a deleted certificate or a
+# missed reload is caught within a day without waiting for the next renewal.
 #
-# Exit 1, wenn mindestens ein Host fehlgeschlagen ist.
+# Exit 1 if at least one host failed.
 set -u
 
 . "${DEPLOY_LIB:-/data/deploy/lib.sh}"
@@ -30,7 +29,7 @@ case "$AGE" in ''|*[!0-9]*) AGE=86400 ;; esac
 case "$RETRY" in ''|*[!0-9]*) RETRY=21600 ;; esac
 case "$MAX_RETRY" in ''|*[!0-9]*) MAX_RETRY=86400 ;; esac
 
-[ -d "$CERT_HOME" ] || { echo "sync: $CERT_HOME fehlt" >&2; exit 1; }
+[ -d "$CERT_HOME" ] || { echo "sync: $CERT_HOME missing" >&2; exit 1; }
 
 _list=$(mktemp) || exit 1
 trap 'rm -f "$_list"' EXIT
@@ -49,7 +48,7 @@ for _d in "$CERT_HOME"/*/; do
     printf '%s %s %s\n' "$_d" "$_cert" "$_ecc" >> "$_list"
 done
 
-# Hosts sind bereits validiert; keine Pfad-Expansion auf der Liste.
+# Hosts are already validated; no pathname expansion on the list.
 set -f
 
 _checked=0
@@ -69,12 +68,12 @@ while IFS=' ' read -r _d _cert _ecc; do
     _hosts=$(fleet_conf_get "$_conf" SAVED_DEPLOY_HOSTS)
     _all=$(fleet_resolve "$_group" "$_hosts") || {
         _fail=$((_fail + 1))
-        echo "sync: FEHLER $_cert: Ziele nicht aufloesbar"
+        echo "sync: ERROR $_cert: cannot resolve targets"
         continue
     }
     if [ -z "$_all" ]; then
         _fail=$((_fail + 1))
-        echo "sync: FEHLER $_cert: keine Zielserver gespeichert"
+        echo "sync: ERROR $_cert: no target servers stored"
         continue
     fi
 
@@ -88,7 +87,7 @@ while IFS=' ' read -r _d _cert _ecc; do
     for _h in $_all; do
         if ! fleet_valid_host "$_h"; then
             _fail=$((_fail + 1))
-            echo "sync: FEHLER $_cert: host ungueltig: $_h"
+            echo "sync: ERROR $_cert: invalid host: $_h"
             continue
         fi
         fleet_split_host "$_h"
@@ -103,9 +102,8 @@ while IFS=' ' read -r _d _cert _ecc; do
 
         _go=0
         if [ "$_last_try" -gt "$_last_ok" ]; then
-            # Letzter Versuch fehlgeschlagen: Backoff, auch wenn noch nie ein
-            # Deploy geklappt hat. Sonst wuerde ein dauerhaft kaputter Host
-            # bei jedem Zyklus neu anlaufen.
+            # Last attempt failed: back off, even if a deploy never succeeded.
+            # Otherwise a permanently broken host would start over every round.
             _wait=$RETRY
             _i=1
             while [ "$_i" -lt "$_fails" ] && [ "$_wait" -lt "$MAX_RETRY" ]; do
@@ -124,7 +122,7 @@ while IFS=' ' read -r _d _cert _ecc; do
         [ "$_go" -eq 1 ] || continue
 
         _due=$((_due + 1))
-        echo "sync: $_cert -> $_h (faellig)"
+        echo "sync: $_cert -> $_h (due)"
         _out=$(
             exec 9>"$LOCK" 2>&1
             flock 9
@@ -136,12 +134,12 @@ while IFS=' ' read -r _d _cert _ecc; do
             _ok=$((_ok + 1))
         else
             _fail=$((_fail + 1))
-            echo "sync: FEHLER $_cert -> $_h (rc=$_rc)"
+            echo "sync: FAILED $_cert -> $_h (rc=$_rc)"
             printf '%s\n' "$_out" | tail -n 5 | sed 's/^/    /'
         fi
     done
 done < "$_list"
 
-echo "sync: $_checked Zertifikate, $_due faellig, $_ok ok, $_fail fehlgeschlagen"
+echo "sync: $_checked certificates, $_due due, $_ok ok, $_fail failed"
 [ "$_fail" -eq 0 ] || exit 1
 exit 0

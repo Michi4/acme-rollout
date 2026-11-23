@@ -1,18 +1,18 @@
 #!/bin/sh
-# Zertifikat aus der Erneuerung nehmen, optional widerrufen.
+# Take a certificate out of renewal, optionally revoke it.
 #
 #   ./scripts/remove.sh '*.example.com'
 #   ./scripts/remove.sh example.net --revoke
 #
-# Ohne --revoke bleiben Zertifikat und Key unter acme/<domain>/ liegen, werden
-# aber nicht mehr erneuert. --revoke widerruft das Zertifikat vorher bei der CA.
-# Dateien auf den Zielhosts und der CNAME im oeffentlichen DNS bleiben
-# unangetastet; beides muss bei Bedarf von Hand entfernt werden.
+# Without --revoke the certificate and key stay under acme/<domain>/ but are no
+# longer renewed. --revoke revokes the certificate with the CA first. Files on
+# the target hosts and the CNAME in public DNS are left alone; remove both by
+# hand if needed.
 set -eu
 cd "$(dirname "$0")/.."
 
-[ -f .env ] || { echo ".env fehlt: cp .env.example .env" >&2; exit 1; }
-[ $# -ge 1 ] || { echo "Aufruf: $0 <domain> [--revoke]" >&2; exit 1; }
+[ -f .env ] || { echo ".env missing: cp .env.example .env" >&2; exit 1; }
+[ $# -ge 1 ] || { echo "Usage: $0 <domain> [--revoke]" >&2; exit 1; }
 
 domain=$1
 shift
@@ -20,13 +20,13 @@ revoke=0
 for arg in "$@"; do
     case "$arg" in
         --revoke) revoke=1 ;;
-        *) echo "unbekannte Option: $arg" >&2; exit 1 ;;
+        *) echo "unknown option: $arg" >&2; exit 1 ;;
     esac
 done
 
 name=${domain#\*.}
 case "$name" in
-    ''|.*|*..*|*.|*[!a-z0-9.-]*) echo "domain ungueltig: $domain" >&2; exit 1 ;;
+    ''|.*|*..*|*.|*[!a-z0-9.-]*) echo "invalid domain: $domain" >&2; exit 1 ;;
 esac
 
 ecc=""
@@ -37,7 +37,7 @@ fi
 rc=0
 if [ "$revoke" = 1 ]; then
     if ! docker compose run --rm acme --locked --revoke --domain "$domain" $ecc; then
-        echo "WARN: Widerruf fehlgeschlagen, Erneuerung wird trotzdem gestoppt" >&2
+        echo "WARN: revocation failed, stopping renewal anyway" >&2
         rc=1
     fi
 fi
@@ -50,10 +50,10 @@ esac
 rm -rf "acme/deploy-state/$slug"
 
 if [ "$revoke" = 1 ] && [ "$rc" -eq 0 ]; then
-    echo "entfernt und widerrufen: $domain"
+    echo "removed and revoked: $domain"
 elif [ "$revoke" = 1 ]; then
-    echo "entfernt: $domain (Widerruf fehlgeschlagen, Zertifikat gilt bis zum Ablauf)"
+    echo "removed: $domain (revocation failed, certificate is valid until expiry)"
 else
-    echo "entfernt: $domain (Zertifikat bleibt liegen, wird nicht mehr erneuert)"
+    echo "removed: $domain (certificate is kept but no longer renewed)"
 fi
 exit "$rc"

@@ -1,73 +1,71 @@
 # acme-rollout
 
-**Kurz:** Zertifikate mit acme.sh ausstellen und per SSH auf viele Server
-ausrollen.
+**Short:** Issue certificates with acme.sh and roll them out to many servers
+over SSH.
 
-**Im Detail:** Ein Container erneuert die Zertifikate alle sechs Stunden.
-DNS-01 laeuft ueber einen eigenen [acme-dns](https://github.com/joohoi/acme-dns)-Server,
-ein Cloudflare-Token wird nicht gebraucht. Nach der Ausstellung kopiert ein
-Deploy-Hook Zertifikat, Kette und Key auf die Zielhosts. Dort prueft ein kleiner
-Empfaenger beides, testet die Webserver-Konfiguration und rollt bei einem Fehler
-die alten Dateien zurueck. Fehlende oder veraltete Hosts werden taeglich
-nachgezogen, Fehler und bald ablaufende Zertifikate gehen per Mail raus.
+**In detail:** One container renews the certificates every six hours. DNS-01
+runs through a self-hosted [acme-dns](https://github.com/joohoi/acme-dns)
+server, so no Cloudflare token is needed. After issuance a deploy hook copies
+certificate, chain and key to the target hosts. There a small receiver validates
+both, tests the web server configuration and restores the previous files if
+anything fails. Missing or stale hosts are caught up daily; failures and
+certificates close to expiry are mailed.
 
-## Zwei Repos, ein Weg
+## Two repos, one path
 
-`acme-rollout` ist die Ausstellungsseite. Die Empfangsseite liegt in
-[deploy-tool](https://github.com/Michi4/deploy-tool): Das Rezept `acme-target`
-legt den Benutzer `acmepush`, den Forced Command und die Sudoers-Regel an, die
-ein Zertifikats-Bundle annehmen.
+`acme-rollout` is the issuing side. The receiving side lives in
+[deploy-tool](https://github.com/Michi4/deploy-tool): the `acme-target` recipe
+creates the `acmepush` user, the forced command and the sudoers rule that accept
+a certificate bundle.
 
 ```
 acme-rollout                          deploy-tool
 acme.sh + deploy hook                 recipes/acme-target
         │                                     │
-        │  stellt aus und pusht               │  richtet Empfaenger ein
+        │  issues and pushes                  │  installs the receiver
         └───────────────┐                     │
                         ▼                     ▼
                  ┌──────────────────────────────────┐
-                 │ Zielhost                         │
+                 │ target host                      │
                  │ acmepush -> acme-target          │
                  │ /etc/ssl/<name>.{crt,key,ca}     │
                  └──────────────────────────────────┘
 ```
 
-Beide Repos funktionieren fuer sich. Zusammen ergeben sie den vollstaendigen
-Weg von der Ausstellung bis zur Datei auf dem Webserver.
+Both repos work on their own. Together they cover the path from issuance to the
+file on the web server.
 
-## Ablauf
+## Flow
 
-- `scripts/acme-dns-register.sh` registriert eine Domain bei acme-dns und gibt
-  den CNAME aus, der im oeffentlichen DNS angelegt werden muss.
-- `scripts/issue.sh` prueft CNAME und Hostkeys, stellt das Zertifikat aus und
-  ruft den Hook `deploy/fleet.sh` auf.
-- Der Hook kopiert `cert.pem`, `chain.pem` und `privkey.pem` per SSH nach
-  `/etc/ssl/<name>.{crt,key,ca}` (Pfad anpassbar, siehe unten). Der Empfaenger
-  validiert Zertifikat und Key, testet den Webserver und stellt bei einem
-  Fehler die alten Dateien wieder her.
-- `scripts/deploy.sh` rollt ein vorhandenes Zertifikat erneut aus, ohne es neu
-  auszustellen.
-- Nach jeder Runde laeuft `deploy/sync.sh`: pro Zertifikat und Host steht der
-  letzte erfolgreiche Deploy in `acme/deploy-state/`. Neu bespielt werden nur
-  Hosts, die noch nie erfolgreich beliefert wurden, deren Zertifikat neuer ist
-  als ihr letzter Deploy oder deren letzter Erfolg aelter als
-  `DEPLOY_SYNC_AGE` (Standard 24 h) ist. Ein fehlgeschlagener Host wird nach
-  6 h, 12 h und danach taeglich erneut versucht.
-- Bleibt in einer Runde etwas liegen oder laeuft ein Zertifikat in weniger als
-  21 Tagen ab, geht eine Mail an `ALERT_EMAIL`.
+- `scripts/acme-dns-register.sh` registers a domain with acme-dns and prints the
+  CNAME that must be created in public DNS.
+- `scripts/issue.sh` checks the CNAME and host keys, issues the certificate and
+  calls the `deploy/fleet.sh` hook.
+- The hook copies `cert.pem`, `chain.pem` and `privkey.pem` over SSH to
+  `/etc/ssl/<name>.{crt,key,ca}` (path configurable, see below). The receiver
+  validates certificate and key, tests the web server and restores the old
+  files on failure.
+- `scripts/deploy.sh` rolls out an existing certificate again without reissuing
+  it.
+- After every round `deploy/sync.sh` runs: the last successful deploy per
+  certificate and host is stored in `acme/deploy-state/`. Only hosts that have
+  never been deployed to, whose certificate is newer than their last deploy, or
+  whose last success is older than `DEPLOY_SYNC_AGE` (default 24 h) are pushed
+  again. A failed host is retried after 6 h, 12 h and then daily.
+- If something is left over in a round, or a certificate expires in less than
+  21 days, a mail goes to `ALERT_EMAIL`.
 
-## Voraussetzungen
+## Requirements
 
-- Docker mit Compose
-- ein acme-dns-Server mit `POST /register` und `POST /update`
-- auf jedem Zielhost: Benutzer `acmepush`, `acme-target` als Forced Command und
-  ein gepinnter Hostkey. Das Rezept `acme-target` aus
-  [deploy-tool](https://github.com/Michi4/deploy-tool) installiert das.
+- Docker with Compose
+- an acme-dns server with `POST /register` and `POST /update`
+- on every target host: the `acmepush` user, `acme-target` as forced command
+  and a pinned host key. The `acme-target` recipe from
+  [deploy-tool](https://github.com/Michi4/deploy-tool) installs that.
 
-## Einrichten
+## Setup
 
-Zuerst die Beispielhosts in `config/groups/*.txt` durch die eigenen ersetzen.
-Dann:
+First replace the example hosts in `config/groups/*.txt` with your own. Then:
 
 ```bash
 cp .env.example .env && chmod 600 .env
@@ -78,11 +76,11 @@ ssh-keygen -t ed25519 -N '' -C acme-rollout -f keys/acme_ed25519
 docker compose up -d --build
 ```
 
-`ACMEDNS_BASE_URL` steht als sicherer Standard im Image und kann in `.env`
-ueberschrieben werden. `.env`, `keys/`, `acme/`, `config/acme-dns/` und
-`config/known_hosts` sind von Git ausgeschlossen.
+`ACMEDNS_BASE_URL` ships as a safe default in the image and can be overridden in
+`.env`. `.env`, `keys/`, `acme/`, `config/acme-dns/` and `config/known_hosts`
+are excluded from Git.
 
-Fuer Alarme in `.env` setzen:
+For alerts, set in `.env`:
 
 ```
 ALERT_EMAIL=ops@example.com
@@ -93,131 +91,127 @@ SMTP_PASS=...
 MAIL_FROM=acme@example.com
 ```
 
-`SMTP_TLS` ist `starttls` (Port 587), `smtps` (Port 465) oder `none`. Fehlt
-`SMTP_HOST`, wird die Meldung nur ins Container-Log geschrieben und in der
-naechsten Runde erneut versucht; der Betrieb laeuft weiter. Test:
+`SMTP_TLS` is `starttls` (port 587), `smtps` (port 465) or `none`. Without
+`SMTP_HOST` the report is only written to the container log and retried next
+round; operation continues. Test:
 
 ```bash
 docker compose run --rm --entrypoint sh acme /data/deploy/notify.sh --test
 ```
 
-### Postfix auf dem Host
+### Postfix on the host
 
-Der Container kann das `sendmail` des Hosts nicht ausfuehren (Alpine, eigenes
-Postfix fehlt). Er kann die Mail aber an den Host-MTA abgeben:
+The container cannot run the host's `sendmail` (Alpine, no Postfix binary). It
+can hand the mail to the host MTA instead:
 
 ```
 NOTIFY_BACKEND=postfix
 ```
 
-Dann geht die Mail an `host.docker.internal:25`, ohne TLS und ohne Login;
-Absender ist `acme-rollout@<domain von ALERT_EMAIL>`. Der Name ist im
-Compose-File auf das Host-Gateway gemappt. Postfix muss Relay aus dem
-Docker-Netz annehmen:
+Mail then goes to `host.docker.internal:25`, without TLS or login; the sender is
+`acme-rollout@<domain of ALERT_EMAIL>`. The name is mapped to the host gateway
+in the compose file. Postfix must accept relay from the Docker network:
 
 ```bash
 docker network inspect acme-rollout_default \
     -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}'
-# z. B. 172.18.0.0/16
+# e.g. 172.18.0.0/16
 
 # /etc/postfix/main.cf
 mynetworks = 127.0.0.0/8 172.18.0.0/16
 inet_interfaces = all
 ```
 
-Danach `postfix reload`. `inet_interfaces = all` ist bei Debian/Ubuntu der
-Standard; wenn Postfix oeffentlich erreichbar ist, Port 25 per Firewall auf die
-Docker-Subnetze beschraenken. `NOTIFY_BACKEND=smtp` (Standard) nutzt weiterhin
-die Werte oben.
+Then `postfix reload`. `inet_interfaces = all` is the Debian/Ubuntu default; if
+Postfix is publicly reachable, restrict port 25 at the firewall to the Docker
+subnets. `NOTIFY_BACKEND=smtp` (the default) keeps using the values above.
 
-## Erstes Zertifikat
+## First certificate
 
 ```bash
 ./scripts/issue.sh '*.example.com' web
 ```
 
-Beim ersten Lauf wird die Domain registriert und der CNAME ausgegeben:
+On the first run the domain is registered and the CNAME is printed:
 
 ```
 _acme-challenge.example.com.  CNAME  <id>.auth.example.com.
 ```
 
-Diesen CNAME im oeffentlichen DNS anlegen (DNS only, nicht proxied), kurz warten
-und den Befehl wiederholen. Danach laeuft die Erneuerung automatisch. Ein
-Wildcard-Zertifikat deckt auch die Domain ohne `*.` ab.
+Create that CNAME in public DNS (DNS only, not proxied), wait a moment and run
+the command again. Renewal is automatic from then on. A wildcard certificate
+also covers the domain without `*.`.
 
-`issue.sh` bricht vorher ab, wenn der CNAME nicht auf den acme-dns-Slot zeigt
-oder ein Zielhost keinen Eintrag in `config/known_hosts` hat. Mit
-`SKIP_PREFLIGHT=1` laesst sich beides ueberspringen.
+`issue.sh` aborts beforehand if the CNAME does not point at the acme-dns slot,
+or if a target host has no entry in `config/known_hosts`. `SKIP_PREFLIGHT=1`
+skips both checks.
 
-Weitere Flaggen:
+More flags:
 
 ```bash
-./scripts/issue.sh --staging example.net web       # Let's Encrypt Staging
-./scripts/issue.sh --force example.net web         # neu ausstellen
+./scripts/issue.sh --staging example.net web       # Let's Encrypt staging
+./scripts/issue.sh --force example.net web         # reissue
 ./scripts/issue.sh --force --keylength ec-256 example.net web
 ```
 
-`--force` ist noetig, um ein bestehendes Zertifikat neu auszustellen, z. B. fuer
-eine neue SAN-Liste oder den Wechsel auf ECC. Fuer SANs das Zertifikat mit
-`--force` und den zusaetzlichen `--domain`-Argumenten direkt mit acme.sh
-ausstellen und danach `./scripts/deploy.sh` laufen lassen.
+`--force` is required to reissue an existing certificate, for example for a new
+SAN list or a switch to ECC. For SANs, issue directly with acme.sh using
+`--force` and the additional `--domain` arguments, then run
+`./scripts/deploy.sh`.
 
-## Gruppen und Ziele
+## Groups and targets
 
 ```
-config/groups/web.txt    Beispielgruppe
-config/groups/edge.txt   Beispielgruppe
+config/groups/web.txt    example group
+config/groups/edge.txt   example group
 ```
 
-Eine Zeile pro Ziel, entweder `host` oder `host:port`. `issue.sh` und
-`deploy.sh` akzeptieren einen Gruppennamen, `all` oder eine Kommastliste:
+One target per line, either `host` or `host:port`. `issue.sh` and `deploy.sh`
+accept a group name, `all` or a comma-separated list:
 
 ```bash
 ./scripts/issue.sh '*.example.com' web
 ./scripts/issue.sh example.net web1.example.com,web2.example.com
-./scripts/deploy.sh example.net web            # nur ausrollen
+./scripts/deploy.sh example.net web            # roll out only
 ```
 
-Eine Gruppe wird bei jeder Erneuerung und bei jedem Sync neu gelesen. Neue
-Hosts bekommen das Zertifikat beim naechsten Sync-Lauf, also spaetestens nach
-rund sechs Stunden - nicht erst bei der naechsten Erneuerung. Sofort geht es mit
-`./scripts/deploy.sh`. Fuer einen neuen Host also:
+A group is read on every renewal and every sync. New hosts get the certificate
+on the next sync run, at most about six hours later - not at the next renewal.
+`./scripts/deploy.sh` is immediate. For a new host:
 
 ```bash
-# auf dem Admin-Rechner, mit deploy-tool
+# on the admin machine, with deploy-tool
 ./deploy.py deploy -r acme-target -p example-acme
 
-# auf dem Zertifikats-Host
-# neuen Host in config/groups/web.txt eintragen
+# on the certificate host
+# add the new host to config/groups/web.txt
 ./scripts/known-hosts.sh
 ./scripts/deploy.sh '*.example.com' web
 ```
 
-Der Sync holt den Host sonst von selbst nach. Der erste Lauf nach diesem Update
-kennt noch keinen Deploy-Status und bespielt deshalb jeden Host einmal neu; das
-ist der einfachste Weg, den Zustand zu verifizieren.
+The sync catches the host up on its own otherwise. The first run after this
+update knows no deploy state and therefore pushes every host once; that is the
+simplest way to verify the whole chain.
 
-## Zertifikatsnamen und Zielpfad
+## Certificate names and target path
 
-- `*.example.com` -> `/etc/ssl/wildcard.example.com.{crt,key,ca}` (deckt auch
-  `example.com` ab)
-- sonst -> `/etc/ssl/<domain>.{crt,key,ca}`
-- abweichend: `DEPLOY_NAME` setzen.
+- `*.example.com` -> `/etc/ssl/wildcard.example.com.{crt,key,ca}` (also covers
+  `example.com`)
+- otherwise -> `/etc/ssl/<domain>.{crt,key,ca}`
+- different: set `DEPLOY_NAME`.
 
-Ein exaktes Zertifikat deckt nur diesen Namen ab. Fuer Subdomains das
-Wildcard-Zertifikat nehmen.
+An exact certificate only covers that name. Use the wildcard certificate for
+subdomains.
 
-Das Verzeichnis ist mit `DEPLOY_PATH` aenderbar (Standard `/etc/ssl`). Der
-Empfaenger muss dafuer das optionale zweite Argument von `install` verstehen;
-der Hook schickt es nur, wenn `DEPLOY_PATH` gesetzt ist:
+The directory is configurable with `DEPLOY_PATH` (default `/etc/ssl`). The
+receiver must accept the optional second `install` argument; the hook only sends
+it when `DEPLOY_PATH` is set:
 
 ```
 DEPLOY_PATH=/srv/tls
 ```
 
-Passende Apache-Konfiguration pro Host (die drei Dateien, die der Empfaenger
-schreibt):
+Matching Apache configuration per host (the three files the receiver writes):
 
 ```apache
 <VirtualHost *:443>
@@ -228,10 +222,10 @@ schreibt):
 </VirtualHost>
 ```
 
-Der Reload des Webservers gehoert zum Empfaenger (`acme-target`), nicht zu
-diesem Repo.
+Reloading the web server belongs to the receiver (`acme-target`), not to this
+repo.
 
-## Betrieb
+## Operation
 
 ```bash
 docker compose logs --tail=50 acme
@@ -239,79 +233,76 @@ docker compose run --rm acme --list
 docker compose run --rm acme --renew --domain '*.example.com'
 ```
 
-Der Container laeuft ohne Argumente in einer Schleife: jede Domain einzeln
-erneuern, Sync, Ablaufpruefung, Alarm. Mit `ACME_INTERVAL` laesst sich der
-Abstand aendern (Standard 21600 Sekunden), `ACME_CYCLES=1` macht genau eine
-Runde und ist beim Debuggen praktisch. Die json-file-Logs sind auf 3 x 10 MB
-begrenzt.
+Run without arguments, the container loops: renew each domain, sync, expiry
+check, alert. `ACME_INTERVAL` changes the interval (default 21600 seconds);
+`ACME_CYCLES=1` runs exactly one round and is handy for debugging. The json-file
+logs are capped at 3 x 10 MB.
 
-Ein Zertifikat stilllegen:
+Removing a certificate:
 
 ```bash
-./scripts/remove.sh '*.example.com'            # nur nicht mehr erneuern
-./scripts/remove.sh '*.example.com' --revoke   # vorher widerrufen
+./scripts/remove.sh '*.example.com'            # stop renewing
+./scripts/remove.sh '*.example.com' --revoke   # revoke first
 ```
 
-Dateien auf den Zielhosts und der CNAME im oeffentlichen DNS bleiben dabei
-stehen und muessen bei Bedarf von Hand entfernt werden.
+Files on the target hosts and the CNAME in public DNS stay in place and must be
+removed by hand if needed.
 
-## Ueberwachung
+## Monitoring
 
-Eine Mail geht raus, wenn
+A mail goes out when
 
-- eine Erneuerung fehlschlaegt,
-- der Deploy-Sync fuer einen Host fehlschlaegt,
-- ein Zertifikat fehlt, nicht lesbar ist oder in weniger als
-  `EXPIRY_WARN_DAYS` (Standard 21) Tagen ablaueft.
+- a renewal fails,
+- the deploy sync fails for a host,
+- a certificate is missing, unreadable or expires in less than
+  `EXPIRY_WARN_DAYS` (default 21) days.
 
-Die Meldung enthaelt die betroffenen Domains und die letzten Zeilen der
-acme.sh-Ausgabe. Eine unveraenderte Meldung wird hoechstens alle
-`ALERT_EVERY` Sekunden (Standard 86400) wiederholt; kommt ein neuer Fehler
-dazu, geht sofort eine Mail raus.
+The report contains the affected domains and the last lines of acme.sh output.
+An unchanged report is repeated at most every `ALERT_EVERY` seconds (default
+86400); a new error mails immediately.
 
-## acme.sh aktualisieren
+## Updating acme.sh
 
-`Dockerfile` pinnt Version und SHA256-Summen beider Downloads. Ein bewegter
-GitHub-Tag faellt damit beim Build auf. Neue Version holen:
+The `Dockerfile` pins the version and both SHA256 checksums. A moved GitHub tag
+therefore fails the build. To fetch a new version:
 
 ```bash
 ./scripts/bump-acme.sh
 docker compose up -d --build
 ```
 
-## Sicherheit
+## Security
 
-- Der Deploy-Key liegt nur auf dem Zertifikats-Host; `from=` in
-  `authorized_keys` beschraenkt ihn auf dessen IP.
-- Hostkeys sind gepinnt (`StrictHostKeyChecking=yes`).
-- `acme-target` schreibt ausschliesslich nach `/etc/ssl` und validiert vor dem
-  Reload.
-- Keine Zugangsdaten im Repo: `.env`, `keys/`, `config/acme-dns/`.
-- Alle acme.sh-Aufrufe teilen sich ein Lock (`/data/.acme.lock`), damit ein
-  manueller Lauf nicht mit der Schleife kollidiert.
+- The deploy key lives only on the certificate host; `from=` in
+  `authorized_keys` restricts it to that host's IP.
+- Host keys are pinned (`StrictHostKeyChecking=yes`).
+- `acme-target` writes only below `/etc/ssl` and validates before reloading.
+- No credentials in the repo: `.env`, `keys/`, `config/acme-dns/`.
+- All acme.sh invocations share one lock (`/data/.acme.lock`), so a manual run
+  cannot collide with the loop.
 
 ## Layout
 
 ```
-docker-compose.yml          ein Dienst: acme
-Dockerfile                  acme.sh + acme-dns-Plugin, Version und Summen gepinnt
-entrypoint.sh               Zyklus: renew, sync, Ablaufpruefung, Alarm
-deploy/fleet.sh             Deploy-Hook, paralleler Rollout pro Host
-deploy/sync.sh              fehlende/veraltete Hosts nachziehen
-deploy/notify.sh            Alarm-Mail per SMTP
-deploy/lib.sh               gemeinsame Helfer (Ziele, Deploy-Status)
-config/groups/*.txt         Zielgruppen
-config/known_hosts          gepinnte Hostkeys (erzeugt)
-config/acme-dns/            acme-dns-Zugangsdaten (erzeugt, geheim)
-keys/acme_ed25519           SSH-Deploy-Key (geheim)
-acme/                       acme.sh-Home und Deploy-Status
-scripts/issue.sh            ausstellen + ausrollen
-scripts/deploy.sh           nur ausrollen
-scripts/preflight.sh        CNAME- und Hostkey-Pruefung (intern)
-scripts/hosts.sh            Gruppe -> Hostliste
-scripts/target.sh           Ziel aufloesen (intern)
-scripts/remove.sh           Erneuerung stoppen, optional widerrufen
-scripts/bump-acme.sh        acme.sh-Version und Summen aktualisieren
+docker-compose.yml          one service: acme
+Dockerfile                  acme.sh + acme-dns plugin, version and sums pinned
+entrypoint.sh               cycle: renew, sync, expiry check, alert
+deploy/fleet.sh             deploy hook, parallel rollout per host
+deploy/sync.sh              catch up missing or stale hosts
+deploy/notify.sh            alert mail over SMTP
+deploy/lib.sh               shared helpers (targets, deploy state)
+config/groups/*.txt         target groups
+config/known_hosts          pinned host keys (generated)
+config/acme-dns/            acme-dns credentials (generated, secret)
+keys/acme_ed25519           SSH deploy key (secret)
+acme/                       acme.sh home and deploy state
+scripts/issue.sh            issue and roll out
+scripts/deploy.sh           roll out only
+scripts/preflight.sh        CNAME and host key checks (internal)
+scripts/hosts.sh            group -> host list
+scripts/target.sh           resolve target (internal)
+scripts/remove.sh           stop renewal, optionally revoke
+scripts/bump-acme.sh        update acme.sh version and checksums
 scripts/acme-dns-register.sh
 scripts/known-hosts.sh
 ```

@@ -1,21 +1,21 @@
 #!/bin/sh
-# Domain bei acme-dns registrieren.
+# Register a domain with acme-dns.
 #
 #   ./scripts/acme-dns-register.sh example.com
 #
-# Legt config/acme-dns/<domain>.env an (0600) und gibt den CNAME aus, der
-# im oeffentlichen DNS angelegt werden muss:
+# Creates config/acme-dns/<domain>.env (0600) and prints the CNAME that must be
+# created in public DNS:
 #
 #   _acme-challenge.example.com. CNAME <id>.auth.example.com.
 #
-# Danach issue.sh erneut ausfuehren.
+# Then run issue.sh again.
 set -eu
 cd "$(dirname "$0")/.."
 
-[ $# -eq 1 ] || { echo "Aufruf: $0 <domain>" >&2; exit 1; }
+[ $# -eq 1 ] || { echo "Usage: $0 <domain>" >&2; exit 1; }
 domain=${1#\*.}
 case "$domain" in
-    ''|.*|*..*|*.|*[!a-z0-9.-]*) echo "domain ungueltig: $1" >&2; exit 1 ;;
+    ''|.*|*..*|*.|*[!a-z0-9.-]*) echo "invalid domain: $1" >&2; exit 1 ;;
 esac
 
 if [ -f .env ]; then
@@ -33,13 +33,13 @@ if [ -f "$file" ]; then
     # shellcheck disable=SC1090
     . "$file"
     set +a
-    echo "vorhanden: $file"
+    echo "existing: $file"
     printf '%s\n' "_acme-challenge.$domain. CNAME $ACMEDNS_FULLDOMAIN."
     exit 0
 fi
 
 resp=$(curl -fsS -m 15 -X POST "$base/register") \
-    || { echo "acme-dns nicht erreichbar: $base" >&2; exit 1; }
+    || { echo "acme-dns unreachable: $base" >&2; exit 1; }
 flat=$(printf '%s' "$resp" | tr -d '\n')
 field() { printf '%s' "$flat" | sed -n "s/.*\"$1\":[[:space:]]*\"\([^\"]*\)\".*/\1/p"; }
 
@@ -49,14 +49,14 @@ sub=$(field subdomain)
 full=$(field fulldomain)
 for v in "$user" "$pass" "$sub" "$full"; do
     case "$v" in
-        ''|*[!A-Za-z0-9._+/=-]*) echo "acme-dns Antwort unerwartet: $flat" >&2; exit 1 ;;
+        ''|*[!A-Za-z0-9._+/=-]*) echo "unexpected acme-dns response: $flat" >&2; exit 1 ;;
     esac
 done
 
 umask 077
 mkdir -p "$dir"
 cat > "$file" <<EOF
-# acme-dns fuer $domain - erzeugt von acme-dns-register.sh
+# acme-dns for $domain - created by acme-dns-register.sh
 ACMEDNS_USERNAME=$user
 ACMEDNS_PASSWORD=$pass
 ACMEDNS_SUBDOMAIN=$sub
@@ -64,9 +64,9 @@ ACMEDNS_FULLDOMAIN=$full
 EOF
 chmod 600 "$file"
 
-echo "registriert: $file"
+echo "registered: $file"
 echo
-echo "CNAME jetzt im DNS anlegen:"
+echo "Create this CNAME in DNS:"
 printf '  _acme-challenge.%s.  CNAME  %s.\n' "$domain" "$full"
 echo
-echo "Danach issue.sh erneut ausfuehren."
+echo "Then run issue.sh again."

@@ -1,14 +1,14 @@
 #!/bin/sh
-# Startet acme.sh mit Argumenten oder - ohne Argumente - den Rennzyklus.
+# Run acme.sh with arguments, or without arguments the renewal cycle.
 #
-# Ein Zyklus:
-#   1. jede Domain einzeln erneuern (--renew), damit der Fehler eindeutig ist
-#   2. deploy/sync.sh: nur die Hosts nachziehen, die fehlen oder alt sind
-#   3. Zertifikate pruefen, die in weniger als 21 Tagen ablaufen
-#   4. bei Problemen eine Mail schicken (gleiche Meldung hoechstens taeglich)
+# One cycle:
+#   1. renew each domain individually (--renew) so a failure names the domain
+#   2. deploy/sync.sh: catch up hosts that are missing or stale
+#   3. check certificates that expire in less than 21 days
+#   4. mail problems (the same report at most once a day)
 #
-# "acme --locked ..." nimmt vorher das Lock, damit ein manueller
-# docker-compose-Lauf nicht mit dem Zyklus kollidiert.
+# "acme --locked ..." takes the lock first, so a manual docker compose run
+# cannot collide with the cycle.
 set -u
 
 ACME_SH=${ACME_SH:-/opt/acme/acme.sh}
@@ -37,7 +37,7 @@ _conf_get() {
     ( . "$1" >/dev/null 2>&1; eval "printf '%s' \"\${$2:-}\"" )
 }
 
-# Verzeichnis, Zertifikatsname und --ecc, eine Zeile pro Zertifikat.
+# Directory, certificate name and --ecc, one line per certificate.
 _cert_list() {
     for _d in "$HOME_DIR"/*/; do
         [ -d "$_d" ] || continue
@@ -62,7 +62,7 @@ _cycle() {
 
     while IFS=' ' read -r _d _c _ecc; do
         if [ -z "$(_conf_get "$_d$_c.conf" Le_CertCreateTime)" ]; then
-            echo "skip: $_c ohne Le_CertCreateTime"
+            echo "skip: $_c without Le_CertCreateTime"
             continue
         fi
         _out=$(
@@ -76,7 +76,7 @@ _cycle() {
             0|2) ;;
             *)
                 _problems=1
-                _report="${_report}Erneuerung fehlgeschlagen: $_c (rc=$_rc)
+                _report="${_report}Renewal failed: $_c (rc=$_rc)
 $(printf '%s' "$_out" | tail -n 5)
 "
                 ;;
@@ -87,12 +87,12 @@ $(printf '%s' "$_out" | tail -n 5)
         _cer="$_d$_c.cer"
         if [ ! -f "$_cer" ]; then
             _problems=1
-            _report="${_report}Zertifikat fehlt: $_c ($_cer)
+            _report="${_report}Certificate missing: $_c ($_cer)
 "
         elif ! openssl x509 -checkend "$((EXPIRY_WARN_DAYS * 86400))" -noout -in "$_cer" >/dev/null 2>&1; then
             _end=$(openssl x509 -enddate -noout -in "$_cer" 2>/dev/null | sed 's/^notAfter=//')
             _problems=1
-            _report="${_report}Zertifikat $_c laeuft in weniger als $EXPIRY_WARN_DAYS Tagen ab oder ist nicht lesbar (bis ${_end:-unbekannt})
+            _report="${_report}Certificate $_c expires in less than $EXPIRY_WARN_DAYS days or is unreadable (until ${_end:-unknown})
 "
         fi
     done < "$_list"
@@ -106,7 +106,7 @@ $(printf '%s' "$_out" | tail -n 5)
             cat "$_sync"
             if [ "$_src" -ne 0 ]; then
                 _problems=1
-                _report="${_report}Deploy-Sync fehlgeschlagen:
+                _report="${_report}Deploy sync failed:
 $(tail -n 15 "$_sync")
 "
             fi
@@ -131,11 +131,11 @@ $(tail -n 15 "$_sync")
     if [ -f "$HOME_DIR/.alert/sig" ] &&
         [ "$(cat "$HOME_DIR/.alert/sig" 2>/dev/null || true)" = "$_sig" ] &&
         [ $((_now - _last)) -lt "$ALERT_EVERY" ]; then
-        echo "alert: gleiche Meldung, zuletzt $_last - keine neue Mail"
+        echo "alert: same report, last sent $_last - no new mail"
         return 0
     fi
 
-    if printf '%s' "$_report" | "$DEPLOY_DIR/notify.sh" "[acme-rollout] Problem auf $(hostname)"; then
+    if printf '%s' "$_report" | "$DEPLOY_DIR/notify.sh" "[acme-rollout] problem on $(hostname)"; then
         printf '%s\n' "$_sig" > "$HOME_DIR/.alert/sig"
         printf '%s\n' "$_now" > "$HOME_DIR/.alert/last"
     fi

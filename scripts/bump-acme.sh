@@ -1,8 +1,8 @@
 #!/bin/sh
-# acme.sh im Dockerfile auf die neueste Version ziehen.
+# Update acme.sh in the Dockerfile to the latest version.
 #
-# Laedt die neueste Release von GitHub, berechnet beide SHA256-Summen und
-# schreibt Version, Summen und das Image-Tag neu. Danach:
+# Downloads the latest GitHub release, computes both SHA256 sums and rewrites
+# version, sums and the image tag. Then:
 #
 #   docker compose up -d --build
 set -eu
@@ -15,16 +15,16 @@ trap 'rm -rf "$work"' EXIT
 tag=$(curl -fsSL -m 20 "$api/releases/latest" \
     | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
     | head -n 1)
-[ -n "$tag" ] || { echo "neueste acme.sh-Version nicht ermittelbar" >&2; exit 1; }
+[ -n "$tag" ] || { echo "could not determine the latest acme.sh version" >&2; exit 1; }
 
 base="https://raw.githubusercontent.com/acmesh-official/acme.sh/$tag"
 curl -fsSL -m 30 "$base/acme.sh" -o "$work/acme.sh"
 curl -fsSL -m 30 "$base/dnsapi/dns_acmedns.sh" -o "$work/dns_acmedns.sh"
 
 head -c 2 "$work/acme.sh" | grep -q '#!' \
-    || { echo "acme.sh: Download sieht nicht wie ein Skript aus" >&2; exit 1; }
+    || { echo "acme.sh: download does not look like a script" >&2; exit 1; }
 head -c 2 "$work/dns_acmedns.sh" | grep -q '#!' \
-    || { echo "dns_acmedns.sh: Download sieht nicht wie ein Skript aus" >&2; exit 1; }
+    || { echo "dns_acmedns.sh: download does not look like a script" >&2; exit 1; }
 
 sha_acme=$(sha256sum "$work/acme.sh" | awk '{print $1}')
 sha_dns=$(sha256sum "$work/dns_acmedns.sh" | awk '{print $1}')
@@ -40,4 +40,4 @@ echo "acme.sh $tag"
 echo "  acme.sh        $sha_acme"
 echo "  dns_acmedns.sh $sha_dns"
 echo
-echo "Jetzt: docker compose up -d --build"
+echo "Now: docker compose up -d --build"

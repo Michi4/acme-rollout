@@ -1,11 +1,11 @@
 #!/bin/sh
-# Gemeinsame Helfer fuer deploy/fleet.sh und deploy/sync.sh.
-# Wird geladen, nicht direkt ausgefuehrt.
+# Shared helpers for deploy/fleet.sh and deploy/sync.sh.
+# Sourced, not executed directly.
 
 : "${DEPLOY_STATE_DIR:=/data/deploy-state}"
 
-# Zertifikatsname -> Verzeichnisname fuer den Deploy-Status.
-# "*.example.com" wird zu "wildcard.example.com", damit kein "*" in Pfaden steht.
+# Certificate name -> directory name for the deploy state.
+# "*.example.com" becomes "wildcard.example.com" so no "*" ends up in paths.
 fleet_slug() {
     case "$1" in
         \*.*) printf 'wildcard.%s' "${1#\*.}" ;;
@@ -20,7 +20,7 @@ fleet_valid_name() {
     return 0
 }
 
-# host oder host:port
+# host or host:port
 fleet_valid_host() {
     case "$1" in
         ''|-*|.*|*..*|*.|*[!A-Za-z0-9.:-]*) return 1 ;;
@@ -28,7 +28,7 @@ fleet_valid_host() {
     return 0
 }
 
-# Setzt FH_HOST und FH_PORT.
+# Sets FH_HOST and FH_PORT.
 fleet_split_host() {
     case "$1" in
         *:*) FH_HOST=${1%:*}; FH_PORT=${1##*:} ;;
@@ -36,8 +36,8 @@ fleet_split_host() {
     esac
 }
 
-# Gruppe und/oder Hostliste -> eine Zeile pro Ziel auf stdout.
-# Eine Gruppe wird bei jedem Aufruf neu aus /config/groups gelesen.
+# Group and/or host list -> one line per target on stdout.
+# A group is re-read from /config/groups on every call.
 fleet_resolve() {
     _fg=$1
     _fl=$2
@@ -46,19 +46,19 @@ fleet_resolve() {
         if [ "$_fg" = all ]; then
             set -- "$_fgd"/*.txt
             if [ ! -e "$1" ]; then
-                echo "fehler: keine Gruppen in $_fgd" >&2
+                echo "error: no groups in $_fgd" >&2
                 return 1
             fi
         else
             case "$_fg" in
                 *[!a-z0-9_-]*)
-                    echo "fehler: DEPLOY_GROUP ungueltig: $_fg" >&2
+                    echo "error: DEPLOY_GROUP invalid: $_fg" >&2
                     return 1
                     ;;
             esac
             set -- "$_fgd/$_fg.txt"
             if [ ! -f "$1" ]; then
-                echo "fehler: Gruppe $_fg fehlt ($1)" >&2
+                echo "error: group $_fg missing ($1)" >&2
                 return 1
             fi
         fi
@@ -72,7 +72,7 @@ fleet_state_file() {
     printf '%s/%s/%s_%s' "$DEPLOY_STATE_DIR" "$(fleet_slug "$1")" "$2" "$3"
 }
 
-# Setzt FS_OK (letzter Erfolg), FS_TRY (letzter Versuch), FS_FAILS.
+# Sets FS_OK (last success), FS_TRY (last attempt), FS_FAILS.
 fleet_state_read() {
     FS_OK=0
     FS_TRY=0
@@ -93,8 +93,8 @@ fleet_state_write() {
         mv "$_fsf.$$" "$_fsf"
 }
 
-# Liest einen Wert aus einer acme.sh-Domain-Config, ohne die aktuelle Shell
-# mit deren Variablen zu fuellen.
+# Read a value from an acme.sh domain config without filling the current shell
+# with its variables.
 fleet_conf_get() {
     ( . "$1" >/dev/null 2>&1; eval "printf '%s' \"\${$2:-}\"" )
 }

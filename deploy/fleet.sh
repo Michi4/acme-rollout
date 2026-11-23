@@ -1,23 +1,22 @@
 #!/bin/sh
-# acme.sh Deploy-Hook "fleet".
+# acme.sh deploy hook "fleet".
 #
-# Wird von acme.sh bei der Ausstellung und bei jeder Erneuerung aufgerufen.
-# Zielserver kommen aus DEPLOY_GROUP (Gruppe) oder DEPLOY_HOSTS (Liste).
-# Eine gesetzte Umgebungsvariable gewinnt - auch leer; sonst gilt der in der
-# Domain-Config gespeicherte Wert. Eine Gruppe wird bei jedem Aufruf neu
-# gelesen, neue Server in der Gruppe werden also ohne Aenderung am Zertifikat
-# mitgenommen.
+# Called by acme.sh on issuance and on every renewal. Target servers come from
+# DEPLOY_GROUP (group) or DEPLOY_HOSTS (list). A variable set in the
+# environment wins - even when empty; otherwise the value stored in the domain
+# config is used. A group is re-read on every call, so new servers in the group
+# are picked up without touching the certificate.
 #
-#   DEPLOY_GROUP     Gruppe aus /config/groups/<name>.txt (oder "all")
+#   DEPLOY_GROUP     group from /config/groups/<name>.txt (or "all")
 #   DEPLOY_HOSTS     "host1 host2 host3:2222"
-#   DEPLOY_ONLY      nur diese Hosts aus der Zielgruppe (fuer den Sync)
-#   DEPLOY_USER      Standard acmepush
-#   DEPLOY_NAME      Zielname unter /etc/ssl (Standard: wildcard.<domain> bzw. <domain>)
-#   DEPLOY_PATH      Zielverzeichnis, Standard /etc/ssl (siehe README)
-#   DEPLOY_PARALLEL  gleichzeitige Verbindungen, Standard 4
+#   DEPLOY_ONLY      only these hosts from the target group (used by the sync)
+#   DEPLOY_USER      default acmepush
+#   DEPLOY_NAME      target name under /etc/ssl (default wildcard.<domain> or <domain>)
+#   DEPLOY_PATH      target directory, default /etc/ssl (see README)
+#   DEPLOY_PARALLEL  concurrent connections, default 4
 #
-# Pro Host wird der letzte erfolgreiche Deploy in /data/deploy-state abgelegt.
-# Damit kann der Sync genau die Hosts nachziehen, die fehlen oder alt sind.
+# The last successful deploy per host is stored in /data/deploy-state, so the
+# sync can push exactly the hosts that are missing or stale.
 fleet_deploy() {
     _cd="$1"
     _ckey="$2"
@@ -51,12 +50,12 @@ fleet_deploy() {
         esac
     fi
     if ! fleet_valid_name "$_name"; then
-        echo "fehler: DEPLOY_NAME ungueltig: $_name"
+        echo "error: DEPLOY_NAME invalid: $_name"
         return 1
     fi
     case "$_user" in
         ''|*[!a-z0-9_-]*|[!a-z_]*)
-            echo "fehler: DEPLOY_USER ungueltig: $_user"
+            echo "error: DEPLOY_USER invalid: $_user"
             return 1
             ;;
     esac
@@ -64,13 +63,13 @@ fleet_deploy() {
         case "$_path" in
             /*) ;;
             *)
-                echo "fehler: DEPLOY_PATH muss absolut sein: $_path"
+                echo "error: DEPLOY_PATH must be absolute: $_path"
                 return 1
                 ;;
         esac
         case "$_path" in
             *[!A-Za-z0-9/._-]*)
-                echo "fehler: DEPLOY_PATH ungueltig: $_path"
+                echo "error: DEPLOY_PATH invalid: $_path"
                 return 1
                 ;;
         esac
@@ -79,19 +78,19 @@ fleet_deploy() {
 
     _all=$(fleet_resolve "$_group" "$_hosts") || return 1
     if [ -z "$_all" ]; then
-        echo "fehler: keine Zielserver (DEPLOY_GROUP/DEPLOY_HOSTS)"
+        echo "error: no target servers (DEPLOY_GROUP/DEPLOY_HOSTS)"
         return 1
     fi
 
-    # Nur die vom Sync angefragten Hosts anfassen. Die gespeicherte Zielgruppe
-    # darf dabei nicht ueberschrieben werden.
+    # Touch only the hosts the sync asked for. The stored target group must not
+    # be overwritten in the process.
     if [ -n "$_only" ]; then
         _sel=""
         for _h in $(printf '%s' "$_only" | tr ',' ' '); do
             case " $(printf '%s' "$_all" | tr '\n' ' ') " in
                 *" $_h "*) _sel="$_sel $_h" ;;
                 *)
-                    echo "fehler: $_h gehoert nicht zur Zielgruppe von $_cd"
+                    echo "error: $_h is not in the target group of $_cd"
                     return 1
                     ;;
             esac
@@ -111,8 +110,8 @@ fleet_deploy() {
 
     _key="${DEPLOY_KEY:-/keys/acme_ed25519}"
     _known="${DEPLOY_KNOWN_HOSTS:-/config/known_hosts}"
-    [ -f "$_key" ] || { echo "fehler: $_key fehlt"; return 1; }
-    [ -f "$_known" ] || { echo "fehler: $_known fehlt (./scripts/known-hosts.sh)"; return 1; }
+    [ -f "$_key" ] || { echo "error: $_key missing"; return 1; }
+    [ -f "$_known" ] || { echo "error: $_known missing (./scripts/known-hosts.sh)"; return 1; }
 
     _tmp=$(mktemp -d) || return 1
     install -m 0600 "$_cfull" "$_tmp/cert.pem" || { rm -rf "$_tmp"; return 1; }
@@ -123,7 +122,7 @@ fleet_deploy() {
     case "$_par" in ''|*[!0-9]*|0) _par=1 ;; esac
     [ "$_par" -le 16 ] || _par=16
 
-    # Kein Pathname-Expansion auf der Hostliste.
+    # No pathname expansion on the host list.
     set -f
     _n=0
     for _h in $_all; do
@@ -147,7 +146,7 @@ fleet_deploy() {
                 ;;
             *)
                 _badn=$((_badn + 1))
-                echo "fehler: $_h hat das Zertifikat nicht angenommen"
+                echo "error: $_h did not accept the certificate"
                 if [ -f "$_tmp/.log.$_fk" ]; then
                     tail -n 3 "$_tmp/.log.$_fk" | sed 's/^/    /'
                 fi
@@ -156,13 +155,13 @@ fleet_deploy() {
     done
     set +f
 
-    echo "deploy: $_name ok $_okn, fehlgeschlagen $_badn"
+    echo "deploy: $_name ok $_okn, failed $_badn"
     rm -rf "$_tmp"
     [ "$_badn" -eq 0 ] || return 1
     return 0
 }
 
-# Ein Host. Laeuft in einer Subshell, damit mehrere Verbindungen parallel gehen.
+# One host. Runs in a subshell so several connections can run in parallel.
 _fleet_one() {
     _h=$1
     _tmp=$2
@@ -179,14 +178,14 @@ _fleet_one() {
     _port=$FH_PORT
 
     if ! fleet_valid_host "$_h"; then
-        echo "fehler: host ungueltig: $_h"
-        echo fehler > "$_tmp/.res.$_fk"
+        echo "error: invalid host: $_h"
+        echo failed > "$_tmp/.res.$_fk"
         return 1
     fi
     case "$_port" in
         ''|*[!0-9]*)
-            echo "fehler: port ungueltig: $_h"
-            echo fehler > "$_tmp/.res.$_fk"
+            echo "error: invalid port: $_h"
+            echo failed > "$_tmp/.res.$_fk"
             return 1
             ;;
     esac
@@ -217,7 +216,7 @@ _fleet_one() {
         echo ok > "$_tmp/.res.$_fk"
     else
         fleet_state_write "$_cd" "$_host" "$_port" "$_ok" "$_now" "$((_fails + 1))"
-        echo fehler > "$_tmp/.res.$_fk"
+        echo failed > "$_tmp/.res.$_fk"
         return 1
     fi
 }

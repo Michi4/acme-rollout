@@ -1,22 +1,22 @@
 #!/bin/sh
-# Wird von issue.sh und deploy.sh geladen: Ziel in Gruppe und Hostliste trennen.
+# Loaded by issue.sh and deploy.sh: split the target into group and host list.
 #
-# Setzt:
-#   group  Gruppe (auch "all") oder leer bei expliziter Hostliste
-#   hosts  Hostliste mit Leerzeichen getrennt
+# Sets:
+#   group  group (including "all") or empty for an explicit host list
+#   hosts  space separated host list
 
 resolve_target() {
-    [ -n "${1:-}" ] || { echo "keine Hosts angegeben" >&2; return 1; }
+    [ -n "${1:-}" ] || { echo "no hosts given" >&2; return 1; }
     group=""
     case "$1" in
         all)
             group=all
             ;;
         *[!a-z0-9_-]*)
-            ;;                  # Hostliste (enthaelt . , oder :)
+            ;;                  # host list (contains . , or :)
         *)
             [ -f "config/groups/$1.txt" ] \
-                || { echo "Gruppe fehlt: config/groups/$1.txt" >&2; return 1; }
+                || { echo "group missing: config/groups/$1.txt" >&2; return 1; }
             group=$1
             ;;
     esac
@@ -29,5 +29,5 @@ resolve_target() {
         hosts=$1
     fi
     [ -n "$hosts" ] \
-        || { echo "keine Hosts angegeben${group:+ (Gruppe $group ist leer)}" >&2; return 1; }
+        || { echo "no hosts given${group:+ (group $group is empty)}" >&2; return 1; }
 }
