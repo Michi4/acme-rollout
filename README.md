@@ -43,8 +43,10 @@ file on the web server.
   calls the `deploy/fleet.sh` hook.
 - The hook copies `cert.pem`, `chain.pem` and `privkey.pem` over SSH to
   `/etc/ssl/<name>.{crt,key,ca}` (path configurable, see below). The receiver
-  validates certificate and key, tests the web server and restores the old
-  files on failure.
+  v2 accepts exactly those three regular files, validates certificate and key,
+  tests the web server and restores the old files on failure. Existing
+  `<name>.crtca`, `<name>.keycrtca` and `<name>.pem` companions are refreshed;
+  `.key`, `.pem` and `.keycrtca` are forced to `0600`.
 - `scripts/deploy.sh` rolls out an existing certificate again without reissuing
   it.
 - After every round `deploy/sync.sh` runs: the last successful deploy per
@@ -59,9 +61,10 @@ file on the web server.
 
 - Docker with Compose
 - an acme-dns server with `POST /register` and `POST /update`
-- on every target host: the `acmepush` user, `acme-target` as forced command
-  and a pinned host key. The `acme-target` recipe from
-  [deploy-tool](https://github.com/Michi4/deploy-tool) installs that.
+- on every target host: the `acmepush` user, `acme-target` v2 as forced
+  command, `/etc/acme-target.dirs` and a pinned host key. The `acme-target`
+  recipe from [deploy-tool](https://github.com/Michi4/deploy-tool) installs
+  that.
 
 ## Setup
 
@@ -232,8 +235,9 @@ An exact certificate only covers that name. Use the wildcard certificate for
 subdomains.
 
 The directory is configurable with `DEPLOY_PATH` (default `/etc/ssl`). The
-receiver must accept the optional second `install` argument; the hook only sends
-it when `DEPLOY_PATH` is set:
+receiver v2 accepts the optional second `install` argument and checks it
+against `/etc/acme-target.dirs`; the hook only sends it when `DEPLOY_PATH` is
+set:
 
 ```
 DEPLOY_PATH=/srv/tls
@@ -319,7 +323,7 @@ too unless you use the postfix backend. They are read from `.env` (Compose
 | `DEPLOY_HOSTS` | - | `host1 host2 host3:2222`, space or comma separated |
 | `DEPLOY_USER` | `acmepush` | SSH user on the target hosts |
 | `DEPLOY_NAME` | `wildcard.<domain>` / `<domain>` | file name below the target directory |
-| `DEPLOY_PATH` | `/etc/ssl` | target directory; needs receiver support for the second `install` argument |
+| `DEPLOY_PATH` | `/etc/ssl` | target directory; receiver v2 checks it against `/etc/acme-target.dirs` |
 | `DEPLOY_PARALLEL` | `4` | concurrent SSH connections, capped at 16 |
 | `DEPLOY_SYNC_AGE` | `86400` | re-push a host after this many seconds without a successful deploy |
 | `DEPLOY_SYNC_RETRY` | `21600` | first retry after a failed deploy, doubled per failure |
@@ -390,9 +394,10 @@ Check the receiver directly:
 
 ```bash
 ssh -i keys/acme_ed25519 -p 22 \
+    -o IdentitiesOnly=yes \
     -o UserKnownHostsFile=config/known_hosts \
     -o StrictHostKeyChecking=yes \
-    acmepush@web1.example.com
+    acmepush@web1.example.com status
 ```
 
 If `known_hosts` still has an entry from before a reinstall, replace it with
@@ -431,7 +436,8 @@ for manual renewals and deploys.
 - The deploy key lives only on the certificate host; `from=` in
   `authorized_keys` restricts it to that host's IP.
 - Host keys are pinned (`StrictHostKeyChecking=yes`).
-- `acme-target` writes only below `/etc/ssl` and validates before reloading.
+- `acme-target` writes only below directories listed in `/etc/acme-target.dirs`
+(default `/etc/ssl`) and validates before reloading.
 - No credentials in the repo: `.env`, `keys/`, `config/acme-dns/`.
 - The loop and the helper scripts take one lock (`/data/.acme.lock`). Use
   `acme --locked ...` for manual renewals so they cannot collide either.
@@ -445,6 +451,7 @@ entrypoint.sh               cycle: renew, sync, expiry check, alert
 deploy/fleet.sh             deploy hook, parallel rollout per host
 deploy/sync.sh              catch up missing or stale hosts
 deploy/notify.sh            alert mail over SMTP
+  deploy/healthcheck.sh       heartbeat for the renewal loop
 deploy/lib.sh               shared helpers (targets, deploy state)
 config/groups/*.txt         target groups
 config/known_hosts          pinned host keys (generated)

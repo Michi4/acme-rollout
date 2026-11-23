@@ -13,6 +13,7 @@ RUN apk add --no-cache \
         openssh-client \
         openssl \
         tar \
+        tzdata \
     && mkdir -p /opt/acme/dnsapi \
     && curl -fsSL "https://raw.githubusercontent.com/acmesh-official/acme.sh/${ACME_VERSION}/acme.sh" \
         -o /tmp/acme.sh \

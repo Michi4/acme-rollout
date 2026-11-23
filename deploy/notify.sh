@@ -84,6 +84,9 @@ trap 'rm -f "$_msg"' EXIT
     printf 'To: %s\n' "$to"
     printf 'Subject: %s\n' "$subject"
     printf 'Date: %s\n' "$(date -R 2>/dev/null || date)"
+    printf 'Message-ID: <%s.%s@%s>\n' "$(date +%s)" "$$" "${from#*@}"
+    printf 'Auto-Submitted: auto-generated\n'
+    printf 'X-Mailer: acme-rollout\n'
     printf 'MIME-Version: 1.0\n'
     printf 'Content-Type: text/plain; charset=utf-8\n'
     printf 'Content-Transfer-Encoding: 8bit\n'

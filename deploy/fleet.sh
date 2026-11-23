@@ -209,6 +209,8 @@ _fleet_one() {
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$_known" \
             -o ConnectTimeout=10 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
             "${_user}@${_host}" "$_cmd" > "$_tmp/.log.$_fk" 2>&1
     then
         fleet_state_write "$_cd" "$_host" "$_port" "$_now" "$_now" 0

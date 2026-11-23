@@ -4,9 +4,13 @@ services:
   acme:
     build: .
     image: acme-rollout:3.1.7
+    container_name: acme-rollout
     restart: unless-stopped
+    init: true
     env_file:
       - .env
+    environment:
+      TZ: Europe/Vienna
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -14,8 +18,30 @@ services:
       - ./deploy:/data/deploy:ro
       - ./config:/config:ro
       - ./keys:/keys:ro
+    networks:
+      acme:
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "/data/deploy/healthcheck.sh"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 10m
+    stop_grace_period: 30s
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+networks:
+  acme:
+    ipam:
+      config:
+        - subnet: 10.66.66.0/24

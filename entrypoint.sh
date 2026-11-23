@@ -25,6 +25,11 @@ case "$CYCLES" in ''|*[!0-9]*) CYCLES=0 ;; esac
 case "$ALERT_EVERY" in ''|*[!0-9]*) ALERT_EVERY=86400 ;; esac
 case "$EXPIRY_WARN_DAYS" in ''|*[!0-9]*) EXPIRY_WARN_DAYS=21 ;; esac
 
+# PID 1 must react to docker stop; sleep in the main loop is interruptible.
+trap 'exit 0' TERM INT
+mkdir -p "$HOME_DIR" 2>/dev/null || true
+date +%s > "$HOME_DIR/.started" 2>/dev/null || true
+
 if [ "$#" -gt 0 ]; then
     if [ "$1" = "--locked" ]; then
         shift
@@ -145,9 +150,11 @@ $(tail -n 15 "$_sync")
 _i=0
 while :; do
     _cycle
+    date +%s > "$HOME_DIR/.last-cycle" 2>/dev/null || true
     _i=$((_i + 1))
     if [ "$CYCLES" -gt 0 ] && [ "$_i" -ge "$CYCLES" ]; then
         break
     fi
-    sleep "$INTERVAL"
+    sleep "$INTERVAL" &
+    wait $!
 done

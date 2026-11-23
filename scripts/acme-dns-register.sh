@@ -18,13 +18,16 @@ case "$domain" in
     ''|.*|*..*|*.|*[!a-z0-9.-]*) echo "invalid domain: $1" >&2; exit 1 ;;
 esac
 
+_base_env=${ACMEDNS_BASE_URL:-}
 if [ -f .env ]; then
     set -a
     # shellcheck disable=SC1091
     . ./.env
     set +a
 fi
-base=${ACMEDNS_BASE_URL:-https://auth.example.com}
+# An explicitly exported value wins over .env, so a one-off run against a
+# different acme-dns server does not require editing the file.
+base=${_base_env:-${ACMEDNS_BASE_URL:-https://auth.example.com}}
 dir=config/acme-dns
 file=$dir/$domain.env
 

@@ -14,8 +14,14 @@ cd "$(dirname "$0")/.."
 domain=$1
 resolve_target "$2"
 check_host_keys "$hosts"
+check_receivers "$hosts"
+
+ecc=""
+if [ -d "acme/${domain}_ecc" ]; then
+    ecc=--ecc
+fi
 
 docker compose run --rm -e ACME_HOME=/data \
     -e DEPLOY_GROUP="$group" \
     -e DEPLOY_HOSTS="$hosts" \
-    acme --locked --deploy --domain "$domain" --deploy-hook fleet
+    acme --locked --deploy --domain "$domain" --deploy-hook fleet $ecc

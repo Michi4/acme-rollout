@@ -161,6 +161,7 @@ else
     echo "WARN: ACMEDNS_FULLDOMAIN unknown, skipping CNAME check" >&2
 fi
 check_host_keys "$hosts"
+check_receivers "$hosts"
 
 if [ "$staging" = 1 ]; then
     server=letsencrypt_test
@@ -181,11 +182,18 @@ if [ "$force" = 1 ]; then
     set -- "$@" --force
 fi
 
+# Pass the acme-dns credentials through the environment, not as -e KEY=VALUE
+# on the command line: a root-owned process environment is not visible to
+# other users, while the docker compose argv would be.
+export ACMEDNS_USERNAME="$use_user"
+export ACMEDNS_PASSWORD="$use_pass"
+export ACMEDNS_SUBDOMAIN="$use_sub"
+
 rc=0
 docker compose run --rm -e ACME_HOME="$acme_home" \
-    -e "ACMEDNS_USERNAME=$use_user" \
-    -e "ACMEDNS_PASSWORD=$use_pass" \
-    -e "ACMEDNS_SUBDOMAIN=$use_sub" \
+    -e ACMEDNS_USERNAME \
+    -e ACMEDNS_PASSWORD \
+    -e ACMEDNS_SUBDOMAIN \
     acme --locked "$@" || rc=$?
 case "$rc" in
     0|2) ;;

@@ -60,3 +60,42 @@ check_cname() {
     fi
     return 0
 }
+
+# Every target must answer through the forced command with receiver v2 before
+# a certificate is issued. This catches a missing recipe, a wrong key or a
+# stale authorized_keys entry before Let's Encrypt is involved.
+check_receivers() {
+    if [ "${SKIP_PREFLIGHT:-0}" = 1 ]; then
+        return 0
+    fi
+    _cr_key=${DEPLOY_KEY:-keys/acme_ed25519}
+    _cr_user=${DEPLOY_USER:-acmepush}
+    _cr_known=${DEPLOY_KNOWN_HOSTS:-config/known_hosts}
+    [ -f "$_cr_key" ] || { echo "deploy key missing: $_cr_key" >&2; return 1; }
+    [ -f "$_cr_known" ] || { echo "$_cr_known missing: run ./scripts/known-hosts.sh" >&2; return 1; }
+
+    for _cr_h in $1; do
+        case "$_cr_h" in
+            *:*) _cr_host=${_cr_h%:*}; _cr_port=${_cr_h##*:} ;;
+            *)   _cr_host=$_cr_h; _cr_port=22 ;;
+        esac
+        _cr_out=$(ssh -i "$_cr_key" -p "$_cr_port" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$_cr_known" \
+            -o ConnectTimeout=8 \
+            "${_cr_user}@${_cr_host}" status 2>&1) || {
+            echo "receiver ${_cr_h}: $_cr_out" >&2
+            return 1
+        }
+        case "$_cr_out" in
+            *"ok=acme-target v2"*) ;;
+            *)
+                echo "receiver ${_cr_h}: unexpected answer: $_cr_out" >&2
+                return 1
+                ;;
+        esac
+    done
+    return 0
+}

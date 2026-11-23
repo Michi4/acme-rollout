@@ -2,5 +2,8 @@
 acme/
 config/acme-dns/
 config/known_hosts
+config/groups/*.txt
+!config/groups/web.txt
+!config/groups/edge.txt
 keys/*
 !keys/README.md
