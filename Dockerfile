@@ -1,6 +1,10 @@
 FROM alpine:3.20
 
-ARG ACME_VERSION=3.1.6
+# Version und Pruefsummen gehoeren zusammen: ein bewegter Tag faellt beim Build
+# auf. Aktualisieren mit ./scripts/bump-acme.sh.
+ARG ACME_VERSION=3.1.7
+ARG ACME_SHA256=35bf6b947478666be137f938f77c5089954f120798220e6fff390949c5ea5692
+ARG DNS_ACMEDNS_SHA256=8a325d23ad708b7abcbd13e9d5d42aab70aa9e4a81095f709f56448064660f7a
 
 RUN apk add --no-cache \
         bash \
@@ -11,9 +15,13 @@ RUN apk add --no-cache \
         tar \
     && mkdir -p /opt/acme/dnsapi \
     && curl -fsSL "https://raw.githubusercontent.com/acmesh-official/acme.sh/${ACME_VERSION}/acme.sh" \
-        -o /opt/acme/acme.sh \
+        -o /tmp/acme.sh \
     && curl -fsSL "https://raw.githubusercontent.com/acmesh-official/acme.sh/${ACME_VERSION}/dnsapi/dns_acmedns.sh" \
-        -o /opt/acme/dnsapi/dns_acmedns.sh \
+        -o /tmp/dns_acmedns.sh \
+    && printf '%s  %s\n' "$ACME_SHA256" /tmp/acme.sh | sha256sum -c - \
+    && printf '%s  %s\n' "$DNS_ACMEDNS_SHA256" /tmp/dns_acmedns.sh | sha256sum -c - \
+    && mv /tmp/acme.sh /opt/acme/acme.sh \
+    && mv /tmp/dns_acmedns.sh /opt/acme/dnsapi/dns_acmedns.sh \
     && chmod 0755 /opt/acme/acme.sh \
     && chmod 0644 /opt/acme/dnsapi/dns_acmedns.sh
 

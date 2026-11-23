@@ -8,7 +8,8 @@ DNS-01 laeuft ueber einen eigenen [acme-dns](https://github.com/joohoi/acme-dns)
 ein Cloudflare-Token wird nicht gebraucht. Nach der Ausstellung kopiert ein
 Deploy-Hook Zertifikat, Kette und Key auf die Zielhosts. Dort prueft ein kleiner
 Empfaenger beides, testet die Webserver-Konfiguration und rollt bei einem Fehler
-die alten Dateien zurueck.
+die alten Dateien zurueck. Fehlende oder veraltete Hosts werden taeglich
+nachgezogen, Fehler und bald ablaufende Zertifikate gehen per Mail raus.
 
 ## Zwei Repos, ein Weg
 
@@ -38,13 +39,22 @@ Weg von der Ausstellung bis zur Datei auf dem Webserver.
 
 - `scripts/acme-dns-register.sh` registriert eine Domain bei acme-dns und gibt
   den CNAME aus, der im oeffentlichen DNS angelegt werden muss.
-- `scripts/issue.sh` stellt das Zertifikat aus und ruft den Hook
-  `deploy/fleet.sh` auf.
+- `scripts/issue.sh` prueft CNAME und Hostkeys, stellt das Zertifikat aus und
+  ruft den Hook `deploy/fleet.sh` auf.
 - Der Hook kopiert `cert.pem`, `chain.pem` und `privkey.pem` per SSH nach
-  `/etc/ssl/<name>.{crt,key,ca}`. Der Empfaenger validiert Zertifikat und Key,
-  testet den Webserver und stellt bei einem Fehler die alten Dateien wieder her.
+  `/etc/ssl/<name>.{crt,key,ca}` (Pfad anpassbar, siehe unten). Der Empfaenger
+  validiert Zertifikat und Key, testet den Webserver und stellt bei einem
+  Fehler die alten Dateien wieder her.
 - `scripts/deploy.sh` rollt ein vorhandenes Zertifikat erneut aus, ohne es neu
   auszustellen.
+- Nach jeder Runde laeuft `deploy/sync.sh`: pro Zertifikat und Host steht der
+  letzte erfolgreiche Deploy in `acme/deploy-state/`. Neu bespielt werden nur
+  Hosts, die noch nie erfolgreich beliefert wurden, deren Zertifikat neuer ist
+  als ihr letzter Deploy oder deren letzter Erfolg aelter als
+  `DEPLOY_SYNC_AGE` (Standard 24 h) ist. Ein fehlgeschlagener Host wird nach
+  6 h, 12 h und danach taeglich erneut versucht.
+- Bleibt in einer Runde etwas liegen oder laeuft ein Zertifikat in weniger als
+  21 Tagen ab, geht eine Mail an `ALERT_EMAIL`.
 
 ## Voraussetzungen
 
@@ -72,6 +82,25 @@ docker compose up -d --build
 ueberschrieben werden. `.env`, `keys/`, `acme/`, `config/acme-dns/` und
 `config/known_hosts` sind von Git ausgeschlossen.
 
+Fuer Alarme in `.env` setzen:
+
+```
+ALERT_EMAIL=ops@example.com
+SMTP_HOST=mail.example.com
+SMTP_PORT=587
+SMTP_USER=acme@example.com
+SMTP_PASS=...
+MAIL_FROM=acme@example.com
+```
+
+`SMTP_TLS` ist `starttls` (Port 587), `smtps` (Port 465) oder `none`. Fehlt
+`SMTP_HOST`, wird die Meldung nur ins Container-Log geschrieben und in der
+naechsten Runde erneut versucht; der Betrieb laeuft weiter. Test:
+
+```bash
+docker compose run --rm --entrypoint sh acme /data/deploy/notify.sh --test
+```
+
 ## Erstes Zertifikat
 
 ```bash
@@ -87,6 +116,23 @@ _acme-challenge.example.com.  CNAME  <id>.auth.example.com.
 Diesen CNAME im oeffentlichen DNS anlegen (DNS only, nicht proxied), kurz warten
 und den Befehl wiederholen. Danach laeuft die Erneuerung automatisch. Ein
 Wildcard-Zertifikat deckt auch die Domain ohne `*.` ab.
+
+`issue.sh` bricht vorher ab, wenn der CNAME nicht auf den acme-dns-Slot zeigt
+oder ein Zielhost keinen Eintrag in `config/known_hosts` hat. Mit
+`SKIP_PREFLIGHT=1` laesst sich beides ueberspringen.
+
+Weitere Flaggen:
+
+```bash
+./scripts/issue.sh --staging example.net web       # Let's Encrypt Staging
+./scripts/issue.sh --force example.net web         # neu ausstellen
+./scripts/issue.sh --force --keylength ec-256 example.net web
+```
+
+`--force` ist noetig, um ein bestehendes Zertifikat neu auszustellen, z. B. fuer
+eine neue SAN-Liste oder den Wechsel auf ECC. Fuer SANs das Zertifikat mit
+`--force` und den zusaetzlichen `--domain`-Argumenten direkt mit acme.sh
+ausstellen und danach `./scripts/deploy.sh` laufen lassen.
 
 ## Gruppen und Ziele
 
@@ -104,9 +150,10 @@ Eine Zeile pro Ziel, entweder `host` oder `host:port`. `issue.sh` und
 ./scripts/deploy.sh example.net web            # nur ausrollen
 ```
 
-Eine Gruppe wird bei jeder Erneuerung neu gelesen. Neue Hosts bekommen das
-Zertifikat beim naechsten Lauf, sofern der Empfaenger installiert und der
-Hostkey gepinnt ist. Fuer einen neuen Host also:
+Eine Gruppe wird bei jeder Erneuerung und bei jedem Sync neu gelesen. Neue
+Hosts bekommen das Zertifikat beim naechsten Sync-Lauf, also spaetestens nach
+rund sechs Stunden - nicht erst bei der naechsten Erneuerung. Sofort geht es mit
+`./scripts/deploy.sh`. Fuer einen neuen Host also:
 
 ```bash
 # auf dem Admin-Rechner, mit deploy-tool
@@ -118,7 +165,11 @@ Hostkey gepinnt ist. Fuer einen neuen Host also:
 ./scripts/deploy.sh '*.example.com' web
 ```
 
-## Zertifikatsnamen
+Der Sync holt den Host sonst von selbst nach. Der erste Lauf nach diesem Update
+kennt noch keinen Deploy-Status und bespielt deshalb jeden Host einmal neu; das
+ist der einfachste Weg, den Zustand zu verifizieren.
+
+## Zertifikatsnamen und Zielpfad
 
 - `*.example.com` -> `/etc/ssl/wildcard.example.com.{crt,key,ca}` (deckt auch
   `example.com` ab)
@@ -128,17 +179,76 @@ Hostkey gepinnt ist. Fuer einen neuen Host also:
 Ein exaktes Zertifikat deckt nur diesen Namen ab. Fuer Subdomains das
 Wildcard-Zertifikat nehmen.
 
+Das Verzeichnis ist mit `DEPLOY_PATH` aenderbar (Standard `/etc/ssl`). Der
+Empfaenger muss dafuer das optionale zweite Argument von `install` verstehen;
+der Hook schickt es nur, wenn `DEPLOY_PATH` gesetzt ist:
+
+```
+DEPLOY_PATH=/srv/tls
+```
+
+Passende Apache-Konfiguration pro Host (die drei Dateien, die der Empfaenger
+schreibt):
+
+```apache
+<VirtualHost *:443>
+    SSLEngine on
+    SSLCertificateFile      /etc/ssl/wildcard.example.com.crt
+    SSLCertificateKeyFile   /etc/ssl/wildcard.example.com.key
+    SSLCertificateChainFile /etc/ssl/wildcard.example.com.ca
+</VirtualHost>
+```
+
+Der Reload des Webservers gehoert zum Empfaenger (`acme-target`), nicht zu
+diesem Repo.
+
 ## Betrieb
 
 ```bash
 docker compose logs --tail=50 acme
 docker compose run --rm acme --list
-docker compose run --rm acme --cron
+docker compose run --rm acme --renew --domain '*.example.com'
 ```
 
-Der Container ruft alle sechs Stunden `acme.sh --cron` auf. acme.sh speichert
-DNS-Zugang, Deploy-Hook und Zielgruppe pro Zertifikat, mehrere Domains stoeren
-sich daher nicht.
+Der Container laeuft ohne Argumente in einer Schleife: jede Domain einzeln
+erneuern, Sync, Ablaufpruefung, Alarm. Mit `ACME_INTERVAL` laesst sich der
+Abstand aendern (Standard 21600 Sekunden), `ACME_CYCLES=1` macht genau eine
+Runde und ist beim Debuggen praktisch. Die json-file-Logs sind auf 3 x 10 MB
+begrenzt.
+
+Ein Zertifikat stilllegen:
+
+```bash
+./scripts/remove.sh '*.example.com'            # nur nicht mehr erneuern
+./scripts/remove.sh '*.example.com' --revoke   # vorher widerrufen
+```
+
+Dateien auf den Zielhosts und der CNAME im oeffentlichen DNS bleiben dabei
+stehen und muessen bei Bedarf von Hand entfernt werden.
+
+## Ueberwachung
+
+Eine Mail geht raus, wenn
+
+- eine Erneuerung fehlschlaegt,
+- der Deploy-Sync fuer einen Host fehlschlaegt,
+- ein Zertifikat fehlt, nicht lesbar ist oder in weniger als
+  `EXPIRY_WARN_DAYS` (Standard 21) Tagen ablaueft.
+
+Die Meldung enthaelt die betroffenen Domains und die letzten Zeilen der
+acme.sh-Ausgabe. Eine unveraenderte Meldung wird hoechstens alle
+`ALERT_EVERY` Sekunden (Standard 86400) wiederholt; kommt ein neuer Fehler
+dazu, geht sofort eine Mail raus.
+
+## acme.sh aktualisieren
+
+`Dockerfile` pinnt Version und SHA256-Summen beider Downloads. Ein bewegter
+GitHub-Tag faellt damit beim Build auf. Neue Version holen:
+
+```bash
+./scripts/bump-acme.sh
+docker compose up -d --build
+```
 
 ## Sicherheit
 
@@ -148,23 +258,31 @@ sich daher nicht.
 - `acme-target` schreibt ausschliesslich nach `/etc/ssl` und validiert vor dem
   Reload.
 - Keine Zugangsdaten im Repo: `.env`, `keys/`, `config/acme-dns/`.
+- Alle acme.sh-Aufrufe teilen sich ein Lock (`/data/.acme.lock`), damit ein
+  manueller Lauf nicht mit der Schleife kollidiert.
 
 ## Layout
 
 ```
 docker-compose.yml          ein Dienst: acme
-Dockerfile                  acme.sh + acme-dns-Plugin, fester Endpunkt
-entrypoint.sh               --cron-Schleife alle 6 Stunden
-deploy/fleet.sh             Deploy-Hook
+Dockerfile                  acme.sh + acme-dns-Plugin, Version und Summen gepinnt
+entrypoint.sh               Zyklus: renew, sync, Ablaufpruefung, Alarm
+deploy/fleet.sh             Deploy-Hook, paralleler Rollout pro Host
+deploy/sync.sh              fehlende/veraltete Hosts nachziehen
+deploy/notify.sh            Alarm-Mail per SMTP
+deploy/lib.sh               gemeinsame Helfer (Ziele, Deploy-Status)
 config/groups/*.txt         Zielgruppen
 config/known_hosts          gepinnte Hostkeys (erzeugt)
 config/acme-dns/            acme-dns-Zugangsdaten (erzeugt, geheim)
 keys/acme_ed25519           SSH-Deploy-Key (geheim)
-acme/                       acme.sh-Home
+acme/                       acme.sh-Home und Deploy-Status
 scripts/issue.sh            ausstellen + ausrollen
 scripts/deploy.sh           nur ausrollen
+scripts/preflight.sh        CNAME- und Hostkey-Pruefung (intern)
 scripts/hosts.sh            Gruppe -> Hostliste
 scripts/target.sh           Ziel aufloesen (intern)
+scripts/remove.sh           Erneuerung stoppen, optional widerrufen
+scripts/bump-acme.sh        acme.sh-Version und Summen aktualisieren
 scripts/acme-dns-register.sh
 scripts/known-hosts.sh
 ```
