@@ -1,0 +1,14 @@
+name: acme-rollout
+
+services:
+  acme:
+    build: .
+    image: acme-rollout:3.1.6
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./acme:/data
+      - ./deploy:/data/deploy:ro
+      - ./config:/config:ro
+      - ./keys:/keys:ro

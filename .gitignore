@@ -1,0 +1,6 @@
+.env
+acme/
+config/acme-dns/
+config/known_hosts
+keys/*
+!keys/README.md
