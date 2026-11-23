@@ -114,9 +114,9 @@ fleet_deploy() {
     [ -f "$_known" ] || { echo "error: $_known missing (./scripts/known-hosts.sh)"; return 1; }
 
     _tmp=$(mktemp -d) || return 1
-    install -m 0600 "$_cfull" "$_tmp/cert.pem" || { rm -rf "$_tmp"; return 1; }
-    install -m 0600 "$_cca" "$_tmp/chain.pem" || { rm -rf "$_tmp"; return 1; }
-    install -m 0600 "$_ckey" "$_tmp/privkey.pem" || { rm -rf "$_tmp"; return 1; }
+            command install -m 0600 "$_cfull" "$_tmp/cert.pem" || { rm -rf "$_tmp"; return 1; }
+        command install -m 0600 "$_cca" "$_tmp/chain.pem" || { rm -rf "$_tmp"; return 1; }
+        command install -m 0600 "$_ckey" "$_tmp/privkey.pem" || { rm -rf "$_tmp"; return 1; }
 
     _par=${DEPLOY_PARALLEL:-4}
     case "$_par" in ''|*[!0-9]*|0) _par=1 ;; esac
