@@ -110,21 +110,49 @@ NOTIFY_BACKEND=postfix
 
 Mail then goes to `host.docker.internal:25`, without TLS or login; the sender is
 `acme-rollout@<domain of ALERT_EMAIL>`. The name is mapped to the host gateway
-in the compose file. Postfix must accept relay from the Docker network:
+in the compose file, so the container reaches the host even though it has its
+own network namespace. Postfix must accept relay from the Docker network.
+
+Find the subnet first; do not guess it, Docker picks it when the network is
+created:
 
 ```bash
 docker network inspect acme-rollout_default \
     -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}'
 # e.g. 172.18.0.0/16
+```
 
+Then add it to the host's `/etc/postfix/main.cf`:
+
+```
 # /etc/postfix/main.cf
 mynetworks = 127.0.0.0/8 172.18.0.0/16
 inet_interfaces = all
 ```
 
-Then `postfix reload`. `inet_interfaces = all` is the Debian/Ubuntu default; if
-Postfix is publicly reachable, restrict port 25 at the firewall to the Docker
-subnets. `NOTIFY_BACKEND=smtp` (the default) keeps using the values above.
+`postfix reload` applies both without dropping connections. `inet_interfaces =
+all` is the Debian/Ubuntu default; with `loopback-only` the host gateway is not
+reachable from the container and every alert fails with "connection refused".
+
+`mynetworks` is a relay permission, not authentication: every client in those
+subnets may send mail through the host. Port 25 is then reachable from the
+Docker subnets. If the host is publicly reachable, restrict port 25 at the
+firewall to the Docker subnets (and localhost) instead of opening it to the
+internet. After `docker compose down` the network can come back with a different
+subnet; re-run `docker network inspect` and update `mynetworks` if alerts stop
+working.
+
+Verify from the host:
+
+```bash
+postconf -n mynetworks inet_interfaces
+ss -ltn 'sport = :25'          # must listen on 0.0.0.0, not only 127.0.0.1
+journalctl -u postfix -n 50    # or /var/log/mail.log
+```
+
+A failed delivery leaves `connect to host.docker.internal[...]:25: Connection
+refused` or `relay access denied` in the container log (`docker compose logs
+acme`). `NOTIFY_BACKEND=smtp` (the default) keeps using the values above.
 
 ## First certificate
 
@@ -230,8 +258,11 @@ repo.
 ```bash
 docker compose logs --tail=50 acme
 docker compose run --rm acme --list
-docker compose run --rm acme --renew --domain '*.example.com'
+docker compose run --rm acme --locked --renew --domain '*.example.com'
 ```
+
+Add `--locked` to manual acme.sh commands. The helper scripts already do, so a
+manual run cannot collide with the loop.
 
 Run without arguments, the container loops: renew each domain, sync, expiry
 check, alert. `ACME_INTERVAL` changes the interval (default 21600 seconds);
@@ -271,6 +302,130 @@ therefore fails the build. To fetch a new version:
 docker compose up -d --build
 ```
 
+## Configuration reference
+
+All values are optional; `ALERT_EMAIL` is required for mail, and `SMTP_HOST`
+too unless you use the postfix backend. They are read from `.env` (Compose
+`env_file`) and from the environment.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ACMEDNS_BASE_URL` | `https://auth.example.com` | acme-dns endpoint; the image ships this default |
+| `ACME_INTERVAL` | `21600` | seconds between renewal rounds |
+| `ACME_CYCLES` | `0` | `0` runs forever, `1` runs one round |
+| `ALERT_EVERY` | `86400` | repeat an unchanged report at most this often |
+| `EXPIRY_WARN_DAYS` | `21` | warn when a certificate expires within this many days |
+| `DEPLOY_GROUP` | - | group from `config/groups/<name>.txt`, or `all` |
+| `DEPLOY_HOSTS` | - | `host1 host2 host3:2222`, space or comma separated |
+| `DEPLOY_USER` | `acmepush` | SSH user on the target hosts |
+| `DEPLOY_NAME` | `wildcard.<domain>` / `<domain>` | file name below the target directory |
+| `DEPLOY_PATH` | `/etc/ssl` | target directory; needs receiver support for the second `install` argument |
+| `DEPLOY_PARALLEL` | `4` | concurrent SSH connections, capped at 16 |
+| `DEPLOY_SYNC_AGE` | `86400` | re-push a host after this many seconds without a successful deploy |
+| `DEPLOY_SYNC_RETRY` | `21600` | first retry after a failed deploy, doubled per failure |
+| `DEPLOY_SYNC_MAX_RETRY` | `86400` | upper bound for that backoff |
+| `NOTIFY_BACKEND` | `smtp` | `smtp` (relay via `SMTP_HOST`) or `postfix` (host MTA) |
+| `ALERT_EMAIL` | - | recipient; without it the report only goes to the log |
+| `SMTP_HOST` | - | SMTP relay; without it the report only goes to the log |
+| `SMTP_PORT` | `587` (`25` for postfix) | SMTP port |
+| `SMTP_TLS` | `starttls` | `starttls`, `smtps` or `none` |
+| `SMTP_USER`, `SMTP_PASS` | - | SMTP login; only sent with the `smtp` backend |
+| `MAIL_FROM` | `acme-rollout@<recipient domain>` | envelope sender |
+| `SKIP_PREFLIGHT` | `0` | `1` skips CNAME and host key checks in the scripts |
+
+`DEPLOY_GROUP`, `DEPLOY_HOSTS`, `DEPLOY_USER`, `DEPLOY_NAME` and `DEPLOY_PATH`
+are stored per certificate in the acme.sh domain config. Setting one in the
+environment for a single run overrides the stored value without changing it;
+`issue.sh`, `deploy.sh` and the sync pass the resolved group and host list
+explicitly.
+
+The acme-dns credentials (`ACMEDNS_USERNAME`, `ACMEDNS_PASSWORD`,
+`ACMEDNS_SUBDOMAIN`, `ACMEDNS_FULLDOMAIN`) are not set in `.env`; they live in
+`config/acme-dns/<domain>.env`, created by `acme-dns-register.sh`.
+
+Internal settings, set by the image or Compose and normally not touched:
+`ACME_HOME` (`/data`), `ACME_LOCK` (`/data/.acme.lock`), `ACME_DEPLOY_DIR`
+(`/data/deploy`), `DEPLOY_ONLY` (sync), `DEPLOY_KEY` (`/keys/acme_ed25519`),
+`DEPLOY_KNOWN_HOSTS` (`/config/known_hosts`), `DEPLOY_GROUPS_DIR`
+(`/config/groups`).
+
+## Troubleshooting
+
+Start here:
+
+```bash
+docker compose ps
+docker compose logs --tail=100 acme
+docker compose run --rm acme --list
+```
+
+### Alerts do not arrive
+
+1. Run the built-in test (see Setup). It prints `mail to ... sent` on success.
+2. `ALERT_EMAIL missing` or `SMTP_HOST missing`: one of the two required values
+   is not set. With the postfix backend only `ALERT_EMAIL` is required.
+3. With `NOTIFY_BACKEND=postfix`, work through "Postfix on the host": the most
+   common causes are a missing `mynetworks` entry, `inet_interfaces =
+   loopback-only`, and a firewall on port 25.
+4. If the test works but problem mails are missing: an unchanged report is only
+   repeated every `ALERT_EVERY` seconds. `alert: same report` in the log is
+   expected, not an error.
+
+### One host keeps failing
+
+The state per certificate and host lives in
+`acme/deploy-state/<slug>/<host>_<port>` on the host (`/data/deploy-state/...`
+in the container): last success, last attempt, consecutive failures.
+
+```bash
+cat acme/deploy-state/wildcard.example.com/web1.example.com_22
+# 1764000000 1764000000 0
+```
+
+A failed host is retried after 6 h, 12 h and then daily. To force it now, delete
+its state file and run `./scripts/deploy.sh '<domain>' <group>`; a missing state
+file counts as "never deployed" and runs immediately.
+
+Check the receiver directly:
+
+```bash
+ssh -i keys/acme_ed25519 -p 22 \
+    -o UserKnownHostsFile=config/known_hosts \
+    -o StrictHostKeyChecking=yes \
+    acmepush@web1.example.com
+```
+
+If `known_hosts` still has an entry from before a reinstall, replace it with
+`./scripts/known-hosts.sh` and retry. The receiver validates certificate and
+key before installing, so a mismatched pair or a failed web server test leaves
+the old files in place; its output is in the round's log and in the alert mail.
+
+### CNAME check fails
+
+`dig +short CNAME _acme-challenge.example.com` must show the slot from
+`config/acme-dns/example.com.env` (`ACMEDNS_FULLDOMAIN`). DNS changes can take a
+minute. `SKIP_PREFLIGHT=1 ./scripts/issue.sh ...` bypasses the check, but Let's
+Encrypt still has to see the record.
+
+### Renewal fails
+
+Run the domain alone with debug output:
+
+```bash
+docker compose run --rm acme --locked --renew --domain '*.example.com' --debug 2
+```
+
+The usual causes are a CNAME that no longer points at acme-dns, credentials in
+`config/acme-dns/<domain>.env` that no longer work, or a rate limit at Let's
+Encrypt (use `./scripts/issue.sh --staging` for tests).
+
+### A manual run seems to hang
+
+All scripts and the loop take `/data/.acme.lock`, so a manual `--locked` run
+waits for the current one instead of colliding with it. The lock belongs to the
+process; if a run was killed, it is released with the process. Use `--locked`
+for manual renewals and deploys.
+
 ## Security
 
 - The deploy key lives only on the certificate host; `from=` in
@@ -278,8 +433,8 @@ docker compose up -d --build
 - Host keys are pinned (`StrictHostKeyChecking=yes`).
 - `acme-target` writes only below `/etc/ssl` and validates before reloading.
 - No credentials in the repo: `.env`, `keys/`, `config/acme-dns/`.
-- All acme.sh invocations share one lock (`/data/.acme.lock`), so a manual run
-  cannot collide with the loop.
+- The loop and the helper scripts take one lock (`/data/.acme.lock`). Use
+  `acme --locked ...` for manual renewals so they cannot collide either.
 
 ## Layout
 
