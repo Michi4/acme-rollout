@@ -13,13 +13,22 @@ cd "$(dirname "$0")/.."
 
 domain=$1
 resolve_target "$2"
-check_host_keys "$hosts"
-check_receivers "$hosts"
 
 ecc=""
 if [ -d "acme/${domain}_ecc" ]; then
     ecc=--ecc
 fi
+
+# --deploy only works on a certificate that already exists. A registered
+# acme-dns slot is not a certificate; acme.sh would only answer "is not a cert
+# name". Point at the command that issues it instead.
+if [ ! -f "acme/$domain/$domain.cer" ] && [ ! -f "acme/${domain}_ecc/$domain.cer" ]; then
+    echo "certificate $domain is not issued yet: run ./scripts/issue.sh '$domain' '$2'" >&2
+    exit 1
+fi
+
+check_host_keys "$hosts"
+check_receivers "$hosts"
 
 docker compose run --rm -e ACME_HOME=/data \
     -e DEPLOY_GROUP="$group" \

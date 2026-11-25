@@ -427,6 +427,19 @@ If `known_hosts` still has an entry from before a reinstall, replace it with
 key before installing, so a mismatched pair or a failed web server test leaves
 the old files in place; its output is in the round's log and in the alert mail.
 
+### "is not a cert name"
+
+`deploy.sh` (acme.sh `--deploy`) only rolls out a certificate that exists.
+`acme-dns-register.sh` merely registers the DNS slot; for a new domain the
+first step is
+
+```bash
+./scripts/issue.sh '*.example.com' web
+```
+
+which issues the certificate and deploys it to the target group in one go.
+`deploy.sh` is for repeating that rollout later.
+
 ### CNAME check fails
 
 `dig +short CNAME _acme-challenge.example.com` must show the slot from
