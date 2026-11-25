@@ -3,7 +3,8 @@
 **Short:** Issue certificates with acme.sh and roll them out to many servers
 over SSH.
 
-**In detail:** One container renews the certificates every six hours. DNS-01
+**In detail:** One container checks the certificates every six hours and renews
+them only when acme.sh reports them due, about 30 days before expiry. DNS-01
 runs through a self-hosted [acme-dns](https://github.com/joohoi/acme-dns)
 server, so no Cloudflare token is needed. After issuance a deploy hook copies
 certificate, chain and key to the target hosts. There a small receiver validates
@@ -272,6 +273,27 @@ Run without arguments, the container loops: renew each domain, sync, expiry
 check, alert. `ACME_INTERVAL` changes the interval (default 21600 seconds);
 `ACME_CYCLES=1` runs exactly one round and is handy for debugging. The json-file
 logs are capped at 3 x 10 MB.
+
+### Renewal timing
+
+A round does not issue anything on its own: `--renew` without `--force` returns
+immediately ("Skipping. Next renewal time is: ...") until the timestamp acme.sh
+stored at issuance has passed. The default is 60 days after issuance - for a
+90-day certificate that is about 30 days before expiry. The value lives in the
+domain config as `Le_NextRenewTime` and is shown by:
+
+```bash
+docker compose run --rm acme --locked --info -d '*.example.com'
+```
+
+The six-hour interval therefore only decides how late the first attempt may
+start (at most six hours), never how much time is left. A failed attempt is
+retried every round, which puts roughly 120 attempts into the 30-day window
+before expiry; the `EXPIRY_WARN_DAYS` warning is the safety net behind them.
+Sleeping until the exact timestamp instead would be tighter, but a clock jump,
+a suspend or a restart at that moment would skip the window, and the retry and
+drift checks would lose their rhythm. Polling a stored due date is what
+certbot's timer and acme.sh's own cron entry do as well.
 
 Removing a certificate:
 
