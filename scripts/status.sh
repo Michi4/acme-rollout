@@ -119,6 +119,9 @@ for spec in config/certs/*.conf; do
     if [ -z "$dir" ]; then
         error "$spec: $cert is not issued (no acme/$cert or acme/${cert}_ecc)"
         say "      run: ./scripts/new-cert.sh $spec"
+    elif [ ! -f "$dir/$cert.conf" ]; then
+        error "$spec: $cert has no acme.sh config ($dir/$cert.conf) - it is not renewed"
+        say "      reissue with ./scripts/new-cert.sh $spec, or remove it with ./scripts/remove.sh $spec"
     elif [ ! -f "$dir/$cert.cer" ]; then
         error "$spec: $cert has no certificate file ($dir/$cert.cer)"
     else
@@ -189,7 +192,17 @@ for dir in acme/*/; do
     case "$name" in
         *_ecc) cert=${name%_ecc} ;;
     esac
-    [ -f "$dir$cert.conf" ] || continue
+    if [ ! -f "$dir$cert.conf" ]; then
+        # Certificate files without a domain config: acme.sh no longer renews
+        # this one (remove.sh, a failed issuance, a manual --remove).
+        if [ -f "$dir$cert.cer" ]; then
+            certs=$((certs + 1))
+            error "$cert: no acme.sh config ($dir$cert.conf), so it is not renewed"
+            [ -n "$(specs_for_cert "$cert")" ] ||
+                say "      no spec either; remove it with ./scripts/remove.sh '$cert'"
+        fi
+        continue
+    fi
     certs=$((certs + 1))
     hook=$(sed -n "s/^Le_DeployHook='\{0,1\}\([^',]*\).*/\1/p" "$dir$cert.conf" | head -n 1)
     [ -n "$hook" ] || hook=$(sed -n 's/^Le_DeployHook=//p' "$dir$cert.conf" | head -n 1 | tr -d "'\"")

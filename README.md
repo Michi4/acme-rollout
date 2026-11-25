@@ -624,7 +624,7 @@ One deploy through the normal path stores both values:
 ./scripts/deploy.sh '*.example.com' web
 ```
 
-The sync limit the damage on its own: when the group file is missing it still
+The sync limits the damage on its own: when the group file is missing it still
 pushes the host it asked for and logs `deploying the requested host only`. That
 covers a half-finished edit; a missing group is still worth fixing.
 

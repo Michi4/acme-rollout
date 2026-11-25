@@ -245,5 +245,25 @@ case "$out" in
     *) bad "status orphan state" "$out" ;;
 esac
 
+# A certificate removed from renewal keeps its files: it must not look healthy.
+d=$(sandbox status-noconf)
+mkdir -p "$d/acme/gone.example"
+printf 'x' > "$d/acme/gone.example/gone.example.cer"
+cat > "$d/config/certs/gone.conf" <<'EOF'
+domain=gone.example
+wildcard=0
+hosts=gone.example
+EOF
+out=$(run_in "$d" ./scripts/status.sh 2>&1) && rc=0 || rc=$?
+[ "$rc" -ne 0 ] && ok "status fails for a certificate without config" || bad "status conf-less rc" "$out"
+case "$out" in
+    *"gone.example has no acme.sh config"*) ok "status names the spec without acme.sh config" ;;
+    *) bad "status spec-side message" "$out" ;;
+esac
+case "$out" in
+    *"gone.example: no acme.sh config"*) ok "status reports the certificate without acme.sh config" ;;
+    *) bad "status cert-side message" "$out" ;;
+esac
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
