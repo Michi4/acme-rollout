@@ -1,9 +1,10 @@
 #!/bin/sh
 # Show whether specs, certificates, groups, host keys, DNS and deploy state
-# still agree with each other. Read-only, safe to run at any time.
+# still agree with each other. Read-only unless --fix is given.
 #
 #   ./scripts/status.sh
 #   ./scripts/status.sh --quiet     # only problems and the summary
+#   ./scripts/status.sh --fix       # write a spec for certificates that have none
 #
 # Exit code 0: everything consistent. 1: at least one problem was printed.
 #
@@ -17,11 +18,13 @@ cd "$(dirname "$0")/.."
 . ./scripts/lib.sh
 
 quiet=0
+fix=0
 for arg in "$@"; do
     case "$arg" in
         --quiet) quiet=1 ;;
+        --fix)   fix=1 ;;
         -h|--help)
-            sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -88,6 +91,80 @@ host_state_file() {
     esac
 }
 
+# --- certificates -> specs (--fix) -----------------------------------------
+
+# One value from an acme.sh domain config without sourcing it: the file carries
+# DNS credentials.
+conf_value() {
+    sed -n "s/^$2='\{0,1\}\([^',]*\).*/\1/p" "$1" 2>/dev/null | head -n 1
+}
+
+# Write a spec for every certificate that has none. The values come from the
+# certificate's own acme.sh config, so an existing deployment is adopted as it
+# is - no host name is invented and an existing spec is never overwritten.
+# Without SAVED_DEPLOY_HOSTS there is nothing to put into hosts=, so the
+# certificate is reported and left alone.
+adopt_missing_specs() {
+    _am_wrote=0
+    for _am_dir in acme/*/; do
+        [ -d "$_am_dir" ] || continue
+        _am_name=${_am_dir%/}
+        _am_name=${_am_name##*/}
+        case "$_am_name" in
+            deploy-state|staging|.*) continue ;;
+        esac
+        _am_cert=$_am_name
+        case "$_am_name" in
+            *_ecc) _am_cert=${_am_name%_ecc} ;;
+        esac
+        _am_conf="$_am_dir$_am_cert.conf"
+        [ -f "$_am_conf" ] || continue
+        [ -n "$(specs_for_cert "$_am_cert")" ] && continue
+
+        _am_domain=$(conf_value "$_am_conf" Le_Domain)
+        [ -n "$_am_domain" ] || continue
+        _am_group=$(conf_value "$_am_conf" SAVED_DEPLOY_GROUP)
+        _am_hosts=$(conf_value "$_am_conf" SAVED_DEPLOY_HOSTS)
+        if [ -z "$_am_hosts" ]; then
+            say "note: $_am_cert has no SAVED_DEPLOY_HOSTS; no spec written"
+            continue
+        fi
+
+        case "$_am_domain" in
+            \*.*) _am_wild=1; _am_base=${_am_domain#\*.} ;;
+            *)    _am_wild=0; _am_base=$_am_domain ;;
+        esac
+        _am_file="config/certs/$_am_base.conf"
+        if [ -e "$_am_file" ]; then
+            _am_file="config/certs/$(cert_slug "$_am_cert").conf"
+        fi
+        if [ -e "$_am_file" ]; then
+            say "note: $_am_file already exists; not overwriting"
+            continue
+        fi
+
+        {
+            printf '# adopted from %s by status.sh --fix on %s\n' \
+                "$_am_conf" "$(date +%F)"
+            printf 'domain=%s\n' "$_am_base"
+            printf 'wildcard=%s\n' "$_am_wild"
+            printf 'hosts=%s\n' "$(printf '%s' "$_am_hosts" | tr ' ' ',')"
+            [ -n "$_am_group" ] && printf 'group=%s\n' "$_am_group"
+        } > "$_am_file" || {
+            warn "cannot write $_am_file"
+            continue
+        }
+        chmod 0644 "$_am_file" 2>/dev/null || true
+        say "wrote $_am_file ($_am_cert)"
+        _am_wrote=$((_am_wrote + 1))
+    done
+    [ "$_am_wrote" -gt 0 ] || say "note: no certificate needed a spec"
+}
+
+if [ "$fix" = 1 ]; then
+    adopt_missing_specs
+fi
+
 # --- specs -> certificate --------------------------------------------------
 
 specs=0
@@ -148,7 +225,20 @@ for spec in config/certs/*.conf; do
 
     for h in $hosts; do
         if ! covers "$cert" "$h"; then
-            warn "$h is not covered by $cert ($spec)"
+            case "$cert" in
+                \*.*)
+                    # Outside the wildcard's base domain (an IP literal or a
+                    # different domain) is an explicit target, not a scope
+                    # mistake. A subdomain deeper than one label is.
+                    case "$h" in
+                        *."${cert#\*.}") warn "$h is not covered by $cert ($spec)" ;;
+                        *) say "note: $h is outside ${cert#\*.} (explicit target)" ;;
+                    esac
+                    ;;
+                *)
+                    warn "$h is not covered by $cert ($spec)"
+                    ;;
+            esac
         fi
         if [ -f config/known_hosts ] && command -v ssh-keygen >/dev/null 2>&1; then
             case "$h" in

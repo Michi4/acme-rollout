@@ -29,7 +29,21 @@ bad() {
 sandbox() {
     dir=$work/$1
     mkdir -p "$dir/bin"
-    (cd "$repo" && tar -cf - --exclude=.git --exclude=acme .) | (cd "$dir" && tar -xf -)
+    # The checkout may be a live deployment: leave its certificate specs, group
+    # files, host keys, acme-dns credentials and keys out, then restore only the
+    # tracked examples. Otherwise the "empty tree" cases see real data.
+    (cd "$repo" && tar -cf - \
+        --exclude=.git --exclude=acme \
+        --exclude='./config/groups/*.txt' \
+        --exclude='./config/certs/*.conf' \
+        --exclude='./config/known_hosts' \
+        --exclude='./config/acme-dns' \
+        --exclude='./keys/*' .) | (cd "$dir" && tar -xf -)
+    for f in config/certs/example.conf config/groups/web.txt config/groups/edge.txt keys/README.md; do
+        [ -f "$repo/$f" ] || continue
+        mkdir -p "$dir/${f%/*}"
+        cp "$repo/$f" "$dir/$f"
+    done
     printf 'ACMEDNS_BASE_URL=https://auth.example.com\n' > "$dir/.env"
     printf '#!/bin/sh\nexit 0\n' > "$dir/bin/docker"
     printf '#!/bin/sh\nexit 0\n' > "$dir/bin/ssh"
@@ -264,6 +278,35 @@ case "$out" in
     *"gone.example: no acme.sh config"*) ok "status reports the certificate without acme.sh config" ;;
     *) bad "status cert-side message" "$out" ;;
 esac
+
+# An existing certificate without a spec can be adopted from its own config.
+d=$(sandbox adopt)
+mkdir -p "$d/acme/*.example.net"
+cat > "$d/acme/*.example.net/*.example.net.conf" <<'EOF'
+Le_Domain='*.example.net'
+Le_DeployHook='fleet,'
+SAVED_DEPLOY_GROUP='example'
+SAVED_DEPLOY_HOSTS='example.net web1.example.net 10.0.0.1'
+EOF
+printf 'x' > "$d/acme/*.example.net/*.example.net.cer"
+printf 'example.net\nweb1.example.net\n10.0.0.1\n' > "$d/config/groups/example.txt"
+printf 'x' > "$d/config/acme-dns/example.net.env"
+mkdir -p "$d/acme/deploy-state/wildcard.example.net"
+for h in example.net web1.example.net 10.0.0.1; do
+    printf '1 1 0\n' > "$d/acme/deploy-state/wildcard.example.net/${h}_22"
+done
+out=$(run_in "$d" ./scripts/status.sh --fix 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 0 ] && ok "status --fix adopts an existing certificate" || bad "status --fix rc" "$out"
+grep -qx 'domain=example.net' "$d/config/certs/example.net.conf" &&
+    ok "adopted spec keeps the domain" || bad "adopted domain" "$out"
+grep -qx 'wildcard=1' "$d/config/certs/example.net.conf" &&
+    ok "adopted spec keeps the wildcard" || bad "adopted wildcard" "$out"
+grep -qx 'hosts=example.net,web1.example.net,10.0.0.1' "$d/config/certs/example.net.conf" &&
+    ok "adopted spec keeps every host" || bad "adopted hosts" "$out"
+grep -qx 'group=example' "$d/config/certs/example.net.conf" &&
+    ok "adopted spec keeps the group" || bad "adopted group" "$out"
+out=$(run_in "$d" ./scripts/status.sh --fix 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 0 ] && ok "status --fix is idempotent" || bad "status --fix rerun" "$out"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -424,9 +424,14 @@ prints one line per finding:
 - hosts that were never deployed, deploy state for a removed certificate
 - acme-dns credentials nobody uses
 
-It is read-only and exits 1 when it finds something, so it fits a cron job or a
-CI step. `--quiet` prints only problems and the summary. Run it after editing a
-spec by hand, and before blaming DNS.
+It is read-only by default and exits 1 when it finds something, so it fits a
+cron job or a CI step. `--quiet` prints only problems and the summary. Run it
+after editing a spec by hand, and before blaming DNS.
+
+`--fix` writes a spec for every certificate that has none. The values
+(`domain`, `wildcard`, `hosts`, `group`) come from the certificate's own acme.sh
+config, so an existing deployment is adopted as it is; a certificate that
+already has a spec is never overwritten.
 
 ## Monitoring
 
