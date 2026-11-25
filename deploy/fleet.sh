@@ -26,21 +26,33 @@ fleet_deploy() {
 
     . "${DEPLOY_LIB:-/data/deploy/lib.sh}"
 
+    # Stored values live as SAVED_* in the domain config. acme.sh's own
+    # _getdeployconf is not used here: it assigns the variable and prints
+    # nothing (so $(...) would be empty), and its unquoted eval breaks on a
+    # host list with spaces. Reading the config directly is exact.
+    _conf=${DOMAIN_CONF:-}
+    _stored() {
+        [ -n "$_conf" ] || return 0
+        fleet_conf_get "$_conf" "SAVED_$1"
+    }
+
+    # An environment variable wins, even when it is empty: that is how
+    # issue.sh and deploy.sh override a stored group for one run.
     if [ "${DEPLOY_GROUP+x}" = x ]; then
         _group=$DEPLOY_GROUP
     else
-        _group=$(_getdeployconf DEPLOY_GROUP)
+        _group=$(_stored DEPLOY_GROUP)
     fi
     if [ "${DEPLOY_HOSTS+x}" = x ]; then
         _hosts=$DEPLOY_HOSTS
     else
-        _hosts=$(_getdeployconf DEPLOY_HOSTS)
+        _hosts=$(_stored DEPLOY_HOSTS)
     fi
 
-    _user="${DEPLOY_USER:-$(_getdeployconf DEPLOY_USER)}"
+    _user="${DEPLOY_USER:-$(_stored DEPLOY_USER)}"
     _user="${_user:-acmepush}"
-    _name="${DEPLOY_NAME:-$(_getdeployconf DEPLOY_NAME)}"
-    _path="${DEPLOY_PATH:-$(_getdeployconf DEPLOY_PATH)}"
+    _name="${DEPLOY_NAME:-$(_stored DEPLOY_NAME)}"
+    _path="${DEPLOY_PATH:-$(_stored DEPLOY_PATH)}"
     _only="${DEPLOY_ONLY:-}"
 
     if [ -z "$_name" ]; then
@@ -76,9 +88,23 @@ fleet_deploy() {
         _path=${_path%/}
     fi
 
-    _all=$(fleet_resolve "$_group" "$_hosts") || return 1
+    _all=$(fleet_resolve "$_group" "$_hosts") || _all=""
+    if [ -z "$_all" ] && [ -n "$_only" ]; then
+        # The sync already resolved this host from the same stored config.
+        # Deploying the one host it asked for is strictly better than failing
+        # the round, in particular when only the group file went missing.
+        echo "WARN: no targets for $_cd, deploying the requested host only"
+        _all=$(printf '%s' "$_only" | tr ',' '\n' | awk 'NF && !seen[$0]++')
+    fi
     if [ -z "$_all" ]; then
-        echo "error: no target servers (DEPLOY_GROUP/DEPLOY_HOSTS)"
+        echo "error: no target servers for $_cd"
+        echo "    DEPLOY_GROUP='${_group}' DEPLOY_HOSTS='${_hosts}'"
+        echo "    config: ${_conf:-not set (deploy outside acme.sh?)}"
+        if [ -n "$_group" ]; then
+            echo "    the group is resolved on every deploy; check config/groups/$_group.txt"
+        else
+            echo "    store one with ./scripts/issue.sh '<cert>' '<group|hosts>'"
+        fi
         return 1
     fi
 

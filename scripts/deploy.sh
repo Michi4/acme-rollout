@@ -8,6 +8,13 @@ cd "$(dirname "$0")/.."
 . ./scripts/target.sh
 . ./scripts/preflight.sh
 
+case "${1:-}" in
+    -h|--help)
+        echo "Usage: $0 <domain> <group|host[,host...]|all>"
+        exit 0
+        ;;
+esac
+
 [ -f .env ] || { echo ".env missing: cp .env.example .env" >&2; exit 1; }
 [ $# -eq 2 ] || { echo "Usage: $0 <domain> <group|host[,host...]|all>" >&2; exit 1; }
 

@@ -10,6 +10,8 @@
 #
 # SKIP_PREFLIGHT=1 skips all checks.
 
+. ./scripts/lib.sh
+
 check_host_keys() {
     if [ "${SKIP_PREFLIGHT:-0}" = 1 ]; then
         return 0
@@ -118,10 +120,7 @@ check_cert_conflicts() {
     if [ ! -d "$_cc_state" ]; then
         return 0
     fi
-    case "$_cc_domain" in
-        \*.*) _cc_slug="wildcard.${_cc_domain#\*.}" ;;
-        *)    _cc_slug=$_cc_domain ;;
-    esac
+    _cc_slug=$(cert_slug "$_cc_domain")
 
     _cc_n=0
     for _cc_h in $_cc_hosts; do

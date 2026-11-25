@@ -250,8 +250,10 @@ the command again. Renewal is automatic from then on. A wildcard certificate
 also covers the domain without `*.`.
 
 `issue.sh` aborts beforehand if the CNAME does not point at the acme-dns slot,
-or if a target host has no entry in `config/known_hosts`. `SKIP_PREFLIGHT=1`
-skips both checks.
+if a target host has no entry in `config/known_hosts`, or if a target does not
+answer through the forced command with the expected receiver version. It also
+warns when a target already serves another certificate from the deploy state.
+`SKIP_PREFLIGHT=1` skips all of these checks.
 
 More flags:
 
@@ -289,7 +291,9 @@ copied servers would receive the new certificate. `issue.sh` and `deploy.sh`
 warn when a target already carries another certificate (see Troubleshooting).
 A group that `new-cert.sh` wrote starts with a header naming its certificate;
 that file is generated, so change the spec and run `new-cert.sh` again.
-`./scripts/deploy.sh` is immediate. For a new host:
+`./scripts/deploy.sh` is immediate. To drop one host from a certificate,
+`./scripts/remove.sh <cert> --host <host>` edits the spec, the group and the
+deploy state together. For a new host:
 
 ```bash
 # on the admin machine, with deploy-tool
@@ -378,12 +382,51 @@ certbot's timer and acme.sh's own cron entry do as well.
 Removing a certificate:
 
 ```bash
-./scripts/remove.sh '*.example.com'            # stop renewing
-./scripts/remove.sh '*.example.com' --revoke   # revoke first
+./scripts/remove.sh '*.example.com' --check          # show the plan, change nothing
+./scripts/remove.sh '*.example.com'                  # stop renewing, clean up
+./scripts/remove.sh '*.example.com' --revoke         # revoke first
+./scripts/remove.sh config/certs/example.conf        # take the name from the spec
+./scripts/remove.sh example.com --host web2.example.com   # one host only
 ```
 
-Files on the target hosts and the CNAME in public DNS stay in place and must be
-removed by hand if needed.
+What goes with the certificate:
+
+- every spec in `config/certs` that describes it, found by the `domain`,
+  `wildcard` and `name` keys rather than by the file name. `--keep-spec` keeps
+  them. Because specs are not in git, a deleted one is copied to
+  `acme/removed-specs/<name>.conf.<timestamp>` first.
+- the group file, but only when `new-cert.sh` generated it for this certificate
+  and no other spec uses the same group (`--keep-group` keeps it regardless).
+- the deploy state of every host, so the sync stops considering it.
+- `config/acme-dns/<domain>.env` only with `--purge-dns`. The slot itself stays
+  registered at acme-dns; the credentials are reusable if the certificate comes
+  back.
+
+A failed `--revoke` keeps the spec: the certificate is still valid on every
+host, and the spec is the only place that still tracks it. Renewal stops either
+way.
+
+`--host` edits the spec, removes the host from that group and deletes its
+entries in the deploy state, so the next sync no longer pushes to it. Files that
+are already on that host stay there.
+
+Files on the target hosts and the CNAME in public DNS are always left alone;
+remove them by hand when a certificate is retired for good.
+
+## Checking the setup
+
+`./scripts/status.sh` cross-checks the pieces that are supposed to agree and
+prints one line per finding:
+
+- spec without certificate, certificate without spec
+- missing group file, group file whose certificate no longer exists
+- hosts the certificate does not cover, missing host keys
+- hosts that were never deployed, deploy state for a removed certificate
+- acme-dns credentials nobody uses
+
+It is read-only and exits 1 when it finds something, so it fits a cron job or a
+CI step. `--quiet` prints only problems and the summary. Run it after editing a
+spec by hand, and before blaming DNS.
 
 ## Monitoring
 
@@ -407,6 +450,17 @@ therefore fails the build. To fetch a new version:
 ./scripts/bump-acme.sh
 docker compose up -d --build
 ```
+
+## Tests
+
+```bash
+sh tests/run.sh
+```
+
+The tests run against a throwaway copy of the repository with stubbed `docker`,
+`ssh`, `dig` and `ssh-keygen`: no network, no container, no host keys. They
+cover the spec parser, `remove.sh`, the preflight conflict warning, the deploy
+hook (stored group, `DEPLOY_ONLY`, environment precedence) and `status.sh`.
 
 ## Configuration reference
 
@@ -437,7 +491,7 @@ too unless you use the postfix backend. They are read from `.env` (Compose
 | `SMTP_TLS` | `starttls` | `starttls`, `smtps` or `none` |
 | `SMTP_USER`, `SMTP_PASS` | - | SMTP login; only sent with the `smtp` backend |
 | `MAIL_FROM` | `acme-rollout@<recipient domain>` | envelope sender |
-| `SKIP_PREFLIGHT` | `0` | `1` skips CNAME and host key checks in the scripts |
+| `SKIP_PREFLIGHT` | `0` | `1` skips the preflight checks: CNAME, host keys, receiver answer, certificate conflicts |
 
 `DEPLOY_GROUP`, `DEPLOY_HOSTS`, `DEPLOY_USER`, `DEPLOY_NAME` and `DEPLOY_PATH`
 are stored per certificate in the acme.sh domain config. Setting one in the
@@ -553,6 +607,27 @@ The spec is the source of truth for `config/groups/<group>.txt`, but the file
 may have been edited by hand. `--update-group` replaces it with the spec hosts,
 `--keep-group` leaves it alone. Both print the difference first.
 
+### `error: no target servers (DEPLOY_GROUP/DEPLOY_HOSTS)`
+
+The deploy hook reads the stored `SAVED_DEPLOY_GROUP` and `SAVED_DEPLOY_HOSTS`
+from the certificate's domain config (`acme/<cert>/<cert>.conf`) and resolves
+the group file on every call. The message means one of three things:
+
+- the group named in the config no longer exists (`config/groups/<group>.txt`),
+- neither a group nor a host list is stored,
+- the certificate was never deployed through these scripts, so nothing is stored
+  yet.
+
+One deploy through the normal path stores both values:
+
+```bash
+./scripts/deploy.sh '*.example.com' web
+```
+
+The sync limit the damage on its own: when the group file is missing it still
+pushes the host it asked for and logs `deploying the requested host only`. That
+covers a half-finished edit; a missing group is still worth fixing.
+
 ### CNAME check fails
 
 `dig +short CNAME _acme-challenge.example.com` must show the slot from
@@ -610,11 +685,14 @@ acme/                       acme.sh home and deploy state
 scripts/new-cert.sh         spec -> group, acme-dns, DNS, issue, verify
 scripts/issue.sh            issue and roll out
 scripts/deploy.sh           roll out only
-scripts/preflight.sh        CNAME and host key checks (internal)
+scripts/preflight.sh        CNAME, host key, receiver and conflict checks (internal)
 scripts/hosts.sh            group -> host list
 scripts/target.sh           resolve target (internal)
-scripts/remove.sh           stop renewal, optionally revoke
+scripts/lib.sh              certificate name, slug and spec helpers (internal)
+scripts/status.sh           cross-check specs, certs, groups, keys, state, DNS
+scripts/remove.sh           stop renewal, drop its spec and group, optionally revoke
 scripts/bump-acme.sh        update acme.sh version and checksums
+tests/run.sh                offline regression tests
 scripts/acme-dns-register.sh
 scripts/known-hosts.sh
 ```
