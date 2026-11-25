@@ -5,5 +5,7 @@ config/known_hosts
 config/groups/*.txt
 !config/groups/web.txt
 !config/groups/edge.txt
+config/certs/*.conf
+!config/certs/example.conf
 keys/*
 !keys/README.md

@@ -211,7 +211,21 @@ case "$keylength" in
     ec-*) deploy_ecc=--ecc ;;
 esac
 
-docker compose run --rm -e ACME_HOME=/data \
+# DEPLOY_NAME, DEPLOY_PATH and DEPLOY_USER from the environment (spec file or
+# .env) win over the values stored in the domain config.
+deploy_env=""
+if [ -n "${DEPLOY_NAME:-}" ]; then
+    deploy_env="$deploy_env -e DEPLOY_NAME"
+fi
+if [ -n "${DEPLOY_PATH:-}" ]; then
+    deploy_env="$deploy_env -e DEPLOY_PATH"
+fi
+if [ -n "${DEPLOY_USER:-}" ]; then
+    deploy_env="$deploy_env -e DEPLOY_USER"
+fi
+
+# shellcheck disable=SC2086
+docker compose run --rm $deploy_env -e ACME_HOME=/data \
     -e DEPLOY_GROUP="$group" \
     -e DEPLOY_HOSTS="$hosts" \
     acme --locked --deploy --domain "$domain" --deploy-hook fleet $deploy_ecc

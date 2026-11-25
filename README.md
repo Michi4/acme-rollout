@@ -158,7 +158,82 @@ A failed delivery leaves `connect to host.docker.internal[...]:25: Connection
 refused` or `relay access denied` in the container log (`docker compose logs
 acme`). `NOTIFY_BACKEND=smtp` (the default) keeps using the values above.
 
+## Adding a certificate
+
+Everything one certificate needs lives in `config/certs/<name>.conf`. One
+command reads that file and does the rest, including waiting while you create
+the DNS record:
+
+```bash
+./scripts/new-cert.sh config/certs/hahnenkamm.conf
+```
+
+No spec yet? The wizard asks, writes the file and continues:
+
+```bash
+./scripts/new-cert.sh --wizard
+```
+
+### The spec
+
+```ini
+domain=example.com                        # base domain, lowercase, no "*"
+wildcard=1                                # 1: *.example.com and example.com
+hosts=example.com web1.example.com        # host[:port], comma or space separated
+group=example                             # default: example (first label)
+
+# name=*.example.com                      # acme.sh certificate name
+# deploy_name=wildcard.example.com        # file name on the target hosts
+# deploy_path=/etc/ssl                    # directory on the target hosts
+# keylength=2048                          # 3072, 4096, ec-256, ec-384, ec-521
+# staging=0                               # 1: staging endpoint, no deploy
+```
+
+| Key | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `domain` | yes | - | base domain; the wildcard comes from `wildcard=` |
+| `wildcard` | no | `1` | `1` covers `*.domain` and `domain`, `0` only `domain` |
+| `hosts` | yes | - | rollout targets; becomes `config/groups/<group>.txt` |
+| `group` | no | first label (`example` for `example.com`) | group name |
+| `name` | no | `*.domain` / `domain` | acme.sh certificate name; only needed to adopt an existing certificate |
+| `deploy_name` | no | `wildcard.<domain>` / `<domain>` | file name below the target directory |
+| `deploy_path` | no | `/etc/ssl` | target directory, see "Certificate names and target path" |
+| `keylength` | no | `2048` | `3072`, `4096`, `ec-256`, `ec-384`, `ec-521` |
+| `staging` | no | `0` | `1` issues on staging and does not deploy |
+
+An unknown key is an error, so a typo cannot silently fall back to a default.
+
+### What the command does
+
+1. validates the spec and warns about hosts the certificate does not cover
+2. writes `config/groups/<group>.txt`; if the file exists and differs it shows
+   the difference and asks (`--update-group` replaces it, `--keep-group` keeps
+   it)
+3. registers the acme-dns slot in `config/acme-dns/<domain>.env` (idempotent)
+4. prints the CNAME and waits for it: create the record, press Enter, repeat
+5. scans host keys that are still missing into `config/known_hosts`
+6. runs `scripts/issue.sh '<certificate>' '<group>'`
+7. prints subject, expiry and the deploy result
+
+The certificate renews itself from then on, and hosts added to the spec follow
+within one sync round. A group file that `new-cert.sh` wrote starts with a
+header naming its certificate; edit the spec, not the file.
+
+### Flags
+
+```bash
+./scripts/new-cert.sh --check example.com        # validate and print the plan only
+./scripts/new-cert.sh --wizard                   # ask, write the spec, continue
+./scripts/new-cert.sh --no-issue example.com     # prepare, stop before issuing
+./scripts/new-cert.sh --wait 600 example.com     # poll the CNAME for 10 minutes
+./scripts/new-cert.sh --staging example.com      # staging, no deploy
+./scripts/new-cert.sh --force example.com        # reissue
+./scripts/new-cert.sh --update-group example.com # spec hosts replace the group file
+```
+
 ## First certificate
+
+Manual path, step by step; `new-cert.sh` above runs all of it from one file.
 
 ```bash
 ./scripts/issue.sh '*.example.com' web
@@ -212,6 +287,8 @@ on the next sync run, at most about six hours later - not at the next renewal.
 Never copy a group file for a new certificate without replacing the hosts: the
 copied servers would receive the new certificate. `issue.sh` and `deploy.sh`
 warn when a target already carries another certificate (see Troubleshooting).
+A group that `new-cert.sh` wrote starts with a header naming its certificate;
+that file is generated, so change the spec and run `new-cert.sh` again.
 `./scripts/deploy.sh` is immediate. For a new host:
 
 ```bash
@@ -366,7 +443,8 @@ too unless you use the postfix backend. They are read from `.env` (Compose
 are stored per certificate in the acme.sh domain config. Setting one in the
 environment for a single run overrides the stored value without changing it;
 `issue.sh`, `deploy.sh` and the sync pass the resolved group and host list
-explicitly.
+explicitly, and `issue.sh` and `deploy.sh` forward `DEPLOY_NAME`, `DEPLOY_PATH`
+and `DEPLOY_USER` when they are set. `new-cert.sh` sets them from the spec.
 
 The acme-dns credentials (`ACMEDNS_USERNAME`, `ACMEDNS_PASSWORD`,
 `ACMEDNS_SUBDOMAIN`, `ACMEDNS_FULLDOMAIN`) are not set in `.env`; they live in
@@ -461,6 +539,20 @@ first step is
 which issues the certificate and deploys it to the target group in one go.
 `deploy.sh` is for repeating that rollout later.
 
+### new-cert.sh stops at the DNS step
+
+It printed the CNAME and waits for it to become visible. Create the record as
+printed (`DNS only`, not proxied), then press Enter. With `--wait 600` it polls
+for ten minutes instead of asking, which is what a non-interactive run needs.
+A CNAME that exists but resolves elsewhere is shown as the current answer; the
+usual causes are a typo, a proxied record or a second record for the same name.
+
+### new-cert.sh refuses because the group file differs
+
+The spec is the source of truth for `config/groups/<group>.txt`, but the file
+may have been edited by hand. `--update-group` replaces it with the spec hosts,
+`--keep-group` leaves it alone. Both print the difference first.
+
 ### CNAME check fails
 
 `dig +short CNAME _acme-challenge.example.com` must show the slot from
@@ -510,10 +602,12 @@ deploy/notify.sh            alert mail over SMTP
   deploy/healthcheck.sh       heartbeat for the renewal loop
 deploy/lib.sh               shared helpers (targets, deploy state)
 config/groups/*.txt         target groups
+config/certs/*.conf         one spec per certificate (see Adding a certificate)
 config/known_hosts          pinned host keys (generated)
 config/acme-dns/            acme-dns credentials (generated, secret)
 keys/acme_ed25519           SSH deploy key (secret)
 acme/                       acme.sh home and deploy state
+scripts/new-cert.sh         spec -> group, acme-dns, DNS, issue, verify
 scripts/issue.sh            issue and roll out
 scripts/deploy.sh           roll out only
 scripts/preflight.sh        CNAME and host key checks (internal)
