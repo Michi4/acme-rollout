@@ -4,8 +4,11 @@
 # check_host_keys "<host list>"    every host needs a pinned host key
 # check_cname <name> <fulldomain>  _acme-challenge.<name> must point at the
 #                                  acme-dns slot
+# check_cert_conflicts <domain> "<host list>"
+#                                  warn when a host already serves another
+#                                  certificate (from acme/deploy-state)
 #
-# SKIP_PREFLIGHT=1 skips both checks.
+# SKIP_PREFLIGHT=1 skips all checks.
 
 check_host_keys() {
     if [ "${SKIP_PREFLIGHT:-0}" = 1 ]; then
@@ -97,5 +100,65 @@ check_receivers() {
                 ;;
         esac
     done
+    return 0
+}
+
+# A host that already carries a different certificate in the deploy state is
+# most likely not part of this certificate's site. That is exactly what a group
+# file copied from another certificate looks like: the old servers would get
+# the new files. Warn instead of stopping - a host may legitimately carry two
+# certificates (an exact and a wildcard one, for example).
+check_cert_conflicts() {
+    if [ "${SKIP_PREFLIGHT:-0}" = 1 ]; then
+        return 0
+    fi
+    _cc_domain=$1
+    _cc_hosts=$2
+    _cc_state=acme/deploy-state
+    if [ ! -d "$_cc_state" ]; then
+        return 0
+    fi
+    case "$_cc_domain" in
+        \*.*) _cc_slug="wildcard.${_cc_domain#\*.}" ;;
+        *)    _cc_slug=$_cc_domain ;;
+    esac
+
+    _cc_n=0
+    for _cc_h in $_cc_hosts; do
+        case "$_cc_h" in
+            *:*) _cc_host=${_cc_h%:*}; _cc_port=${_cc_h##*:} ;;
+            *)   _cc_host=$_cc_h;      _cc_port=22 ;;
+        esac
+        for _cc_dir in "$_cc_state"/*/; do
+            if [ ! -d "$_cc_dir" ]; then
+                continue
+            fi
+            _cc_dir=${_cc_dir%/}
+            _cc_dir=${_cc_dir##*/}
+            if [ "$_cc_dir" = "$_cc_slug" ]; then
+                continue
+            fi
+            _cc_file="$_cc_state/$_cc_dir/${_cc_host}_${_cc_port}"
+            if [ ! -f "$_cc_file" ]; then
+                continue
+            fi
+            # Only a host that was deployed successfully carries a certificate.
+            _cc_ok=$(awk 'NR == 1 { print $1 + 0; exit }' "$_cc_file" 2>/dev/null) || _cc_ok=0
+            case "$_cc_ok" in
+                ''|0|*[!0-9]*) continue ;;
+            esac
+            case "$_cc_dir" in
+                wildcard.*) _cc_other="*.${_cc_dir#wildcard.}" ;;
+                *)          _cc_other=$_cc_dir ;;
+            esac
+            echo "WARN: $_cc_h already serves $_cc_other (deploy state $_cc_file)" >&2
+            _cc_n=$((_cc_n + 1))
+        done
+    done
+
+    if [ "$_cc_n" -gt 0 ]; then
+        echo "WARN: $_cc_domain would be deployed next to those certificates." >&2
+        echo "WARN: check config/groups (a copied group file?) so no host gets the wrong one." >&2
+    fi
     return 0
 }

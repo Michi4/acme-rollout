@@ -209,6 +209,9 @@ accept a group name, `all` or a comma-separated list:
 
 A group is read on every renewal and every sync. New hosts get the certificate
 on the next sync run, at most about six hours later - not at the next renewal.
+Never copy a group file for a new certificate without replacing the hosts: the
+copied servers would receive the new certificate. `issue.sh` and `deploy.sh`
+warn when a target already carries another certificate (see Troubleshooting).
 `./scripts/deploy.sh` is immediate. For a new host:
 
 ```bash
@@ -426,6 +429,24 @@ If `known_hosts` still has an entry from before a reinstall, replace it with
 `./scripts/known-hosts.sh` and retry. The receiver validates certificate and
 key before installing, so a mismatched pair or a failed web server test leaves
 the old files in place; its output is in the round's log and in the alert mail.
+
+### A host carries the wrong certificate
+
+`issue.sh` and `deploy.sh` compare the chosen hosts with `acme/deploy-state/`
+and warn when a host was already deployed successfully with a different
+certificate:
+
+```
+WARN: web1.example.com already serves *.example.org (deploy state acme/deploy-state/wildcard.example.org/web1.example.com_22)
+WARN: *.example.com would be deployed next to those certificates.
+WARN: check config/groups (a copied group file?) so no host gets the wrong one.
+```
+
+The usual cause is a group file that was copied from another certificate and
+still lists its servers. Fix `config/groups/<name>.txt` and run again; the
+warning is not fatal. A host that legitimately carries two certificates (an
+exact and a wildcard one, for example) triggers the same lines on every manual
+run. The sync does not run this check, so it never blocks a scheduled round.
 
 ### "is not a cert name"
 

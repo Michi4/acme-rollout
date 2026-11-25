@@ -27,6 +27,7 @@ if [ ! -f "acme/$domain/$domain.cer" ] && [ ! -f "acme/${domain}_ecc/$domain.cer
     exit 1
 fi
 
+check_cert_conflicts "$domain" "$hosts"
 check_host_keys "$hosts"
 check_receivers "$hosts"
 

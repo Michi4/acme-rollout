@@ -160,6 +160,7 @@ if [ -n "$use_full" ]; then
 else
     echo "WARN: ACMEDNS_FULLDOMAIN unknown, skipping CNAME check" >&2
 fi
+check_cert_conflicts "$domain" "$hosts"
 check_host_keys "$hosts"
 check_receivers "$hosts"
 
